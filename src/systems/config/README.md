@@ -1,0 +1,9 @@
+# config
+
+搬入範圍：目前寫死在 `web-build/index.html` 裡的常數設定。
+例如 `APPROACH_SEC`、`WINDOW_GOOD`/`WINDOW_GREAT`/`WINDOW_PERFECT`、
+`COMBO_MILESTONES`、`BOSS_FINISHER_HP`、`BOSS_FINISHER_FAIL_DMG_PCT`、
+`BOSS_FINISHER_SUCCESS_SCORE`/`BOSS_FINISHER_FAIL_SCORE` 等所有目前分散在
+程式各處的魔法數字。
+
+狀態：尚未搬入內容（Phase 1）。
