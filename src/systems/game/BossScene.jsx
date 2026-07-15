@@ -221,6 +221,18 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
       onVibrate: (pattern) => vibrate(pattern),
       onBossHit: (cat) => applyBossHit(cat, undefined),
     });
+    // ⚠️ 修正:「boss 戰抽卡沒生效」的根本原因——`judgeCore` 的一般判定
+    // 分數公式(`scoreMult`/`perfWindowMult`/`perfectBonus`/`missMult`/
+    // `stabFloor`/`autoPerfect`/`comboRecover` 等等)全部是從
+    // `engine.setRogue()` 餵進去的內部 state 讀的,不是每次呼叫都重新
+    // 傳參數。`game/PlayScene.jsx` 在建立 engine 後跟每次選卡後都有呼叫
+    // `engine.setRogue(rogueRef.current)`,但這個檔案從來沒有呼叫過
+    // ——`rogueRef.current` 只被這個場景自己手動讀兩個欄位
+    // (`bossDmgMult`/`expressMult`,見上面 `applyBossHit`/
+    // `addExpressCharge`),`judgeCore` 內部完全不知道玩家選了什麼卡,
+    // 所以絕大多數肉鴿卡(除了 finalsprint/charge 這兩張場景自己手動讀
+    // 欄位的)選了跟沒選一樣。這裡補上建立當下的初始同步。
+    engineRef.current.setRogue(rogueRef.current);
   }
 
   // chart 驅動彈幕模式(2026-07-15k):對照原始碼 `startBoss()` 掛載時抓
@@ -234,8 +246,20 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
       .then((r) => { if (!r.ok) throw new Error("no chart"); return r.json(); })
       .then((data) => {
         if (cancelled) return;
+        // ⚠️ 修正:譜面 JSON 原始欄位是 `{time, lane}`(對照
+        // `public/assets/boss-bgm-*.normal.json`),不是 `{hitTime, lane}`——
+        // 這裡漏掉欄位對應,直接把原始物件塞進 chartRef,導致下面 tick()
+        // 的生彈幕迴圈永遠讀到 `hitTime===undefined`(`undefined - slowAppr`
+        // 是 NaN,`NaN <= t` 恆假),迴圈條件永遠不成立、彈幕永遠生不出來。
+        // 因為 `notes.length > 0` 讓 `chartLoadedRef.current` 被標記為
+        // true(進入 chart 驅動模式),連下面「拿不到 chart 就走備援固定
+        // 間隔模式」的 fallback 分支也不會被觸發——這是 BOSS 戰彈幕幾乎
+        // 生不出來(只剩偶發的訊號/口水特殊招式彈幕)、必殺技幾乎打不到
+        // 彈幕、BOSS 幾乎不掉血的根本原因。對照 `PlayScene.jsx` 的正確寫法
+        // (`n.lane, hitTime: n.time`)補上欄位對應,排序也改用真的存在的
+        // `time` 欄位。
         const notes = Array.isArray(data?.notes)
-          ? [...data.notes].sort((a, b) => a.hitTime - b.hitTime)
+          ? [...data.notes].sort((a, b) => a.time - b.time).map((n) => ({ lane: n.lane, hitTime: n.time }))
           : [];
         chartRef.current = notes;
         chartIdxRef.current = 0;
@@ -321,6 +345,29 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
           for (const bl of bullets) bulletsRef.current.push({ id: `special-${now}-${bl.lane}-${Math.random().toString(36).slice(2, 6)}`, lane: bl.lane, hitTime: bl.hitTime, fallSec: bl.fallSec });
           showNotice(move === "signal" ? "📶 訊號很差啦!" : "💧 口水噴濺 · 看不清了!");
         }
+      }
+
+      // ⚠️ 修正:必殺技「掃除視窗」——對照原始碼 `fireExpress()` 會設
+      // `expressUntilRef = now + 1200`,tick 迴圈每一輪都檢查
+      // `if (wallNow < expressUntilRef.current) { expressBlast(true); }`,
+      // 在這 1200ms 視窗內「隨後生成的音符」也會被持續追殺,原始碼另外
+      // 還在 `fireExpress()` 裡用 `setTimeout` 補一波 520ms 延遲的第二次
+      // 清空。`items.js` 的 `isExpressSweepActive(now)` 這個判斷式本來就
+      // 寫好了,但這個檔案的 `activateItem("express")` 只做了「按下當下」
+      // 那一瞬間的單次清空,沒有人在 tick 迴圈裡呼叫
+      // `isExpressSweepActive()`——這正是「boss 戰點必殺 boss 沒扣血」的
+      // 根本原因:玩家按下必殺技時畫面上經常沒有彈幕(彈幕還沒生出來/剛
+      // 好被清空過),單次清空清到 0 顆等於沒有傷害,而原本該持續 1.2 秒
+      // 追殺新彈幕的機制完全沒被接上。這裡補上:視窗開啟期間,每一輪
+      // tick 只要盤面上還有彈幕就整批當 perfect 命中清掉(比原始碼「立即
+      // +520ms 兩次瞬間清空」更密集,效果只會更好,不會漏接視窗內任何一顆
+      // 新彈幕),放在「生彈幕」之後、「過期自動 miss」之前,確保這一幀
+      // 新生的彈幕也會被掃到,而且被掃掉的彈幕不會又被底下的過期判定
+      // 誤判成 miss。
+      if (itemsRef.current.isExpressSweepActive(now) && bulletsRef.current.length) {
+        const swept = bulletsRef.current;
+        bulletsRef.current = [];
+        for (const bl of swept) applyBossHit("perfect", bl.lane);
       }
 
       // 過期彈幕自動 miss
@@ -503,6 +550,8 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
     setRogueCardIds(nextIds);
     setRogueOffer(null);
     rogueRef.current = recalcRogue(nextIds);
+    // 同上,選卡當下也要重新同步進 engine,不然新選的卡一樣不會生效。
+    if (engineRef.current) engineRef.current.setRogue(rogueRef.current);
     showNotice(`🎴 選了「${card.name}」`);
   };
 
