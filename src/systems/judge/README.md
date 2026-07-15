@@ -72,3 +72,25 @@
 接進 `web-build/index.html`。要不要接線、什麼時候接線、要不要先做一個
 `web-build-next` 內的最小可玩判定畫面來手動試手感，都還沒有排程，會再
 另外跟你確認。
+
+## 2026-07-15:最小可玩畫面接線(`systems/game/PlayScene.jsx`)
+
+上面「下一步」問題選了「先做一個最小可玩判定畫面」這條路，實作進度：
+
+- **新增 `engine.miss(lane, isChartNote, nowMs)`**：原本 `createGameEngine()`
+  只暴露 `hit()`(對應 `judgeLane`)，但原始碼 tick 迴圈還有一條「音符掉出
+  判定窗、玩家沒按到」的自動 miss 路徑(`index.html` 2420 行，直接呼叫
+  `registerHit(n.lane,"miss",...)`，不經過 `judgeLane`)。這次補上
+  `engine.miss()` 直接重用同一份 `registerHit`，行為對齊原始碼。
+- **`systems/audio/se.js` 補搬 `playDrum()`/`playComboFanfare()`**：這兩個
+  是 Phase 2 audio 搬移時「刻意先不搬」的具名 SFX(因為當時沒有呼叫端)，
+  現在 `gameEngine.js` 的 `onPlayDrum`/`onPlayComboFanfare` callback 真的
+  要接聲音了，逐字對照原始碼 1269-1313 行/1052-1069 行補上，`AudioManager`
+  新增 `playDrum()`/`playComboFanfare()` 方法呼叫它們。
+- **範圍邊界(這次刻意只做最小子集，不是完整移植)**：只搬「一般音符」
+  判定路徑(`buildChart()` 備援固定節奏，5 軌，Perfect/Great/Good/Miss)，
+  **沒有**做雙軌行李箱音符/炸彈/雜訊/BOSS 分支/NPC/道具/肉鴿卡——這些
+  在 `judgeCore` 裡邏輯都已經寫好，但這次的 `PlayScene` 只餵最單純的
+  一般音符 input，尚未搬對應的 UI/生成邏輯，詳見 `systems/game/README.md`
+  跟 `PlayScene.jsx` 內的註解。
+- ⚠️ **完全沒有經過瀏覽器實測**，見頂層 HANDOFF.md 對應章節的待驗證清單。

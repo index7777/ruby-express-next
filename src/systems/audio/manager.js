@@ -14,7 +14,10 @@ import {
   setMasterVolume as setCtxMasterVolume,
 } from "./context.js";
 import { SingleAudioChannel } from "./bgm.js";
-import { playGateBeep as _playGateBeep, playEnvelopedTone, playNoiseBurst } from "./se.js";
+import {
+  playGateBeep as _playGateBeep, playEnvelopedTone, playNoiseBurst,
+  playDrum as _playDrum, playComboFanfare as _playComboFanfare,
+} from "./se.js";
 import { AmbientRumble } from "./ambient.js";
 import { VolumeModel, CATEGORIES } from "./volume.js";
 
@@ -91,6 +94,10 @@ export class AudioManager {
   playGateBeep() { _playGateBeep(); }
   playTone(opts) { playEnvelopedTone(getMasterGain(), opts); }
   playNoiseBurst(opts) { playNoiseBurst(getAudioContext(), getMasterGain(), getNoiseBuffer(), opts); }
+
+  // ── Judge 專屬 SE(Phase 3 接線補搬,見 se.js 開頭註解)──
+  playDrum(laneKey, category) { _playDrum(getAudioContext(), getMasterGain(), getNoiseBuffer(), laneKey, category); }
+  playComboFanfare() { _playComboFanfare(getAudioContext(), getMasterGain()); }
 
   // ── ducking(新增能力;voice/announcement 之後要接語音提示時,
   //    可以用這個暫時壓低 bgm/ambient,不用另外手刻淡出邏輯)──

@@ -81,3 +81,75 @@ export function playNoiseBurst(ctx, masterGain, noiseBuffer, {
   src.connect(filter); filter.connect(g); g.connect(masterGain);
   src.start(t0); src.stop(t0 + decay + 0.03);
 }
+
+// ── Phase 3(Judge 接線)補搬:以下兩個是原本「故意先不搬」的具名 SFX
+// 之中,判定核心(gameEngine.js)真正會呼叫到的兩個——onPlayDrum/
+// onPlayComboFanfare。逐字對照 web-build/index.html playDrum()(約
+// 1269-1313 行)/ playComboFanfare()(約 1052-1069 行),只是改成吃
+// ctx/masterGain/noiseBuffer 參數而不是閉包讀 ref,呼叫端(judge 系統)
+// 負責從 audio/context.js 拿這三樣東西傳進來。
+
+// 5 軌鼓聲判定音效:kick/tom 用 sine 音高下滑,hihat/snare/crash 用
+// noiseBuffer 過濾出不同音色,category==="miss" 時整體悶聲(低通/降頻)、
+// category==="perfect" 時音量加成。
+export function playDrum(ctx, masterGain, noiseBuffer, laneKey, category) {
+  if (!ctx || !masterGain) return;
+  const t0 = ctx.currentTime;
+  const muffled = category === "miss";
+  const bright = category === "perfect";
+  const volMul = muffled ? 0.35 : bright ? 1.1 : category === "good" ? 0.7 : 0.9;
+
+  const env = (gain, peak, attack, decay) => {
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(peak, t0 + attack);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + attack + decay);
+  };
+
+  if (laneKey === "kick" || laneKey === "tom") {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    const baseFreq = laneKey === "kick" ? 130 : 190;
+    const endFreq = laneKey === "kick" ? 45 : 90;
+    osc.frequency.setValueAtTime(baseFreq, t0);
+    osc.frequency.exponentialRampToValueAtTime(endFreq, t0 + 0.12);
+    let filt = null;
+    if (muffled) { filt = ctx.createBiquadFilter(); filt.type = "lowpass"; filt.frequency.value = 300; }
+    env(gain, 0.9 * volMul, 0.005, laneKey === "kick" ? 0.18 : 0.22);
+    osc.connect(gain);
+    if (filt) { gain.connect(filt); filt.connect(masterGain); } else gain.connect(masterGain);
+    osc.start(t0);
+    osc.stop(t0 + 0.3);
+  } else {
+    if (!noiseBuffer) return;
+    const src = ctx.createBufferSource();
+    src.buffer = noiseBuffer;
+    const gain = ctx.createGain();
+    const filt = ctx.createBiquadFilter();
+    if (laneKey === "hihat") { filt.type = "highpass"; filt.frequency.value = muffled ? 1200 : 6000; env(gain, 0.5 * volMul, 0.001, 0.05); }
+    else if (laneKey === "snare") { filt.type = "bandpass"; filt.frequency.value = muffled ? 400 : 1800; filt.Q.value = 0.7; env(gain, 0.8 * volMul, 0.001, 0.14); }
+    else { filt.type = "highpass"; filt.frequency.value = muffled ? 800 : 3000; env(gain, 0.6 * volMul, 0.005, 0.55); }
+    src.connect(filt);
+    filt.connect(gain);
+    gain.connect(masterGain);
+    src.start(t0);
+    src.stop(t0 + 0.7);
+  }
+}
+
+// combo 里程碑 fanfare:上升大三和弦琶音(523.25/659.25/783.99/1046.5Hz)。
+export function playComboFanfare(ctx, masterGain) {
+  if (!ctx || !masterGain) return;
+  [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
+    const t0 = ctx.currentTime + i * 0.07;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "triangle";
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(0.22, t0 + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.25);
+    osc.connect(gain); gain.connect(masterGain);
+    osc.start(t0); osc.stop(t0 + 0.3);
+  });
+}

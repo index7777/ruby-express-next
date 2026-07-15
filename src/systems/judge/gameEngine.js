@@ -349,6 +349,13 @@ export function createGameEngine(callbacks = {}) {
   let state = createInitialJudgeState();
   return {
     hit(input) { return judgeCore(input, state, callbacks); },
+    // 對應原始碼 tick 迴圈裡「音符掉出判定窗、玩家沒按到」的自動 miss
+    // (index.html 2420 行:`if (t > n.hitTime + WINDOW_GOOD) registerHit(n.lane, "miss", n.kind !== "double")`)。
+    // 這條路徑不經過 judgeLane/judgeCore(不吃 laneIdx 當下按鍵),原始碼是
+    // tick 迴圈直接呼叫 registerHit,所以這裡直接重用同一份 registerHit,
+    // 不透過 judgeCore 的分支判斷。isChartNote:占位行李客雙軌音符(kind
+    // ==="double")不算譜面音符,miss 不列入 Full Combo(呼叫端自行判斷後傳入)。
+    miss(lane, isChartNote, nowMs) { return registerHit(state, lane, "miss", isChartNote, nowMs, callbacks); },
     recoverFromImbalance(nowMs) { return recoverFromImbalance(state, callbacks); },
     setRogue(rogue) { state.rogue = { ...state.rogue, ...rogue }; },
     setItems(items) { state.items = { ...state.items, ...items }; },

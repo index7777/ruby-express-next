@@ -26,6 +26,7 @@ import { CATEGORIES, VolumeModel, isMenuBgmSilentPhase, createAudioManager } fro
 import { createFxManager, createScreenShake, createHitStop, FxLayer, ANIMATIONS } from "../effect/index.js";
 import { createSceneManager, SCENE_NAMES } from "../scene/index.js";
 import { createCameraManager, applyCameraPreset } from "../camera/index.js";
+import { PlayScene } from "../game/index.js";
 
 function Row({ label, ok, detail }) {
   return (
@@ -61,6 +62,7 @@ export default function App() {
   const sceneRef = useRef(null);
   const [sceneLog, setSceneLog] = useState([]);
   const [currentScene, setCurrentScene] = useState(null);
+  const [showPlayScene, setShowPlayScene] = useState(false);
   if (!sceneRef.current) {
     const sm = createSceneManager();
     ["hub", "lobby", "mode", "songselect"].forEach((name) => {
@@ -68,6 +70,12 @@ export default function App() {
         onEnter: () => setSceneLog((l) => [...l.slice(-6), `→ 進入 ${name}`]),
         onExit: () => setSceneLog((l) => [...l.slice(-6), `← 離開 ${name}`]),
       });
+    });
+    // "playing"(判定測試場)是這次 Phase 3 接線新加的場景,onEnter/onExit
+    // 只負責記錄場景切換紀錄,實際畫面切換由下面的 showPlayScene 控制。
+    sm.register("playing", {
+      onEnter: () => setSceneLog((l) => [...l.slice(-6), "→ 進入 playing(判定測試場)"]),
+      onExit: () => setSceneLog((l) => [...l.slice(-6), "← 離開 playing"]),
     });
     sceneRef.current = sm;
   }
@@ -78,6 +86,14 @@ export default function App() {
   const goBackScene = () => {
     sceneRef.current.back();
     setCurrentScene(sceneRef.current.getCurrent());
+  };
+  const enterPlayScene = () => {
+    gotoScene("playing");
+    setShowPlayScene(true);
+  };
+  const exitPlayScene = () => {
+    setShowPlayScene(false);
+    goBackScene();
   };
 
   const cameraRef = useRef(null);
@@ -189,6 +205,18 @@ export default function App() {
 
   const allOk = checks.every((c) => c.ok);
 
+  if (showPlayScene) {
+    return (
+      <PlayScene
+        audio={audioRef.current}
+        fx={fxRef.current}
+        shake={shakeRef.current}
+        camera={cameraRef.current}
+        onExit={exitPlayScene}
+      />
+    );
+  }
+
   const triggerFx = (type) => {
     fxRef.current.spawn(type, { x: 20 + Math.random() * 60, y: 30 + Math.random() * 40 });
   };
@@ -233,7 +261,7 @@ export default function App() {
       <div style={{ width: "100%", maxWidth: 480 }}>
         <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>共GO · Ruby Express</div>
         <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 14 }}>
-          Phase 1+2+4+5+6 搬移驗證 — {allOk ? "全部模組載入正常 ✓" : "有模組載入異常，請截圖回報 ✗"}
+          Phase 1+2+4+5+6 搬移驗證 + Phase 3 判定測試場接線 — {allOk ? "全部模組載入正常 ✓" : "有模組載入異常，請截圖回報 ✗"}
         </div>
         <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 12, overflow: "hidden" }}>
           {checks.map((c) => <Row key={c.label} {...c} />)}
@@ -304,6 +332,20 @@ export default function App() {
             </button>
           </div>
           <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6, textAlign: "center" }}>Hit Stop 狀態:{hitStopLabel}</div>
+        </div>
+
+        <div style={{ marginTop: 18, padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,215,0,0.3)" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>判定測試場(Phase 3:GameEngine + Scene + Camera + FX + Audio 實際接線)</div>
+          <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
+            最小可玩子集:只有一般音符判定(5 軌 D/F/J/K/L),沒有 BOSS/道具/NPC。
+            完全沒經過瀏覽器實測,務必實際打一輪確認手感/音效/特效都正常。
+          </div>
+          <button
+            onClick={enterPlayScene}
+            style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid #FFD700", background: "transparent", color: "#FFD700", fontSize: 14, cursor: "pointer" }}
+          >
+            ▶ 進判定測試場
+          </button>
         </div>
 
         <div style={{ marginTop: 18, padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.04)" }}>
