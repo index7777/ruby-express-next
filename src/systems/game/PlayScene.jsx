@@ -102,7 +102,16 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
   const [notice, setNotice] = useState("");
   // 每幀都會變的畫面資料收在這裡(不是 React state),渲染時直接讀
   // `viewRef.current.xxx`,只靠 `renderTick` 這一顆 state 觸發重繪。
-  const viewRef = useRef({ npcs: [], cameraStyle: {}, shakeStyle: {}, items: null, balanceUi: null });
+  const viewRef = useRef({ npcs: [], items: null, balanceUi: null });
+  // cameraWrapRef(D 類接線,2026-07-16 第四輪):鏡頭縮放/平移跟畫面震動
+  // (fieldBoxRef 本身)這兩個 transform 原本存進 `viewRef.cameraStyle`/
+  // `shakeStyle`,靠每幀 `bumpRender()` 觸發的 React re-render 讀出來套進
+  // JSX 的 style prop——這代表每幀都要讓 React reconciler 重新比對整棵
+  // 子樹的這兩個 style 物件。改成 tick() 裡直接寫
+  // `cameraWrapRef.current.style.transform`/`fieldBoxRef.current.style.
+  // transform`,完全繞過 React render 這一段(JSX 的 style 物件不再包含
+  // `transform` 這個 key,React 的 style diff 只會動它自己管理的 key,不會
+  // 動這裡用 ref 直接寫入的屬性,兩者不會互相覆蓋)。
   const [, setRenderTick] = useState(0);
   const bumpRender = () => setRenderTick((t) => (t + 1) % 1000000);
 
@@ -114,6 +123,7 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
   const rafRef = useRef(null);
   const engineRef = useRef(null);
   const fieldBoxRef = useRef(null);
+  const cameraWrapRef = useRef(null); // D 類接線:鏡頭 transform 直接寫這個 ref,見上方 viewRef 旁的說明
   const streaksRef = useRef({ perfect: 0, greatPlus: 0 });
   const npcRollAtRef = useRef(0);
   const resultSavedRef = useRef(false); // 通勤模式(有傳 stationIndex)結束時只寫存檔一次
@@ -803,8 +813,14 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
       if (fieldRect) drawField(fieldRect.width, FALL_DISTANCE + 40);
       view.npcs = npc.active.map((n) => ({ id: n.id, type: n.type, remainMs: Math.max(0, n.durationMs - (now - n.bornAt)) }));
       view.balanceUi = balanceUiNext;
-      view.cameraStyle = { transform: `scale(${camState.zoom}) translate(${camState.x}px, ${camState.y}px)` };
-      view.shakeStyle = { transform: `translate(${sx}px, ${sy}px) rotate(${rotate}deg)` };
+      // D 類接線(2026-07-16 第四輪):鏡頭/震動 transform 直接寫 DOM,不再
+      // 存進 viewRef 給 JSX 的 style prop 讀,見上方 cameraWrapRef 旁的說明。
+      if (cameraWrapRef.current) {
+        cameraWrapRef.current.style.transform = `scale(${camState.zoom}) translate(${camState.x}px, ${camState.y}px)`;
+      }
+      if (fieldBoxRef.current) {
+        fieldBoxRef.current.style.transform = `translate(${sx}px, ${sy}px) rotate(${rotate}deg)`;
+      }
       view.items = {
         charges: { ...itemsRef.current.charges },
         activeUntil: { ...itemsRef.current.activeUntil },
@@ -946,9 +962,9 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
         <div ref={fieldBoxRef} style={{
           position: "relative", height: FALL_DISTANCE + 40, borderRadius: 12,
           background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.1)",
-          overflow: "hidden", ...viewRef.current.shakeStyle,
+          overflow: "hidden",
         }}>
-          <div style={{ position: "absolute", inset: 0, ...viewRef.current.cameraStyle }}>
+          <div ref={cameraWrapRef} style={{ position: "absolute", inset: 0 }}>
             {/* D 類接線(2026-07-16):軌道底色/底紋/音符/炸彈/雜訊全部收進
                 這一張 canvas,每幀由 `drawField()` 直接畫(見上方定義),
                 不再是每顆音符一個 React DOM 節點——這是「game loop 完全

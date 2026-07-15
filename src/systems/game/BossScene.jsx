@@ -109,7 +109,11 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
   // state,渲染時直接讀 `viewRef.current.xxx`,只靠 `renderTick` 這一顆
   // state 觸發重繪——跟 `PlayScene.jsx`/`ParticleLayer.jsx` 同樣的模式,
   // 見 `systems/game/README.md`「主遊戲迴圈重構」章節。
-  const viewRef = useRef({ holdUi: null, gateUi: null, cameraStyle: {}, shakeStyle: {}, attackFx: null });
+  const viewRef = useRef({ holdUi: null, gateUi: null, attackFx: null });
+  // cameraWrapRef(D 類接線,2026-07-16 第四輪):理由跟寫法同
+  // `PlayScene.jsx` 的 `cameraWrapRef`——鏡頭縮放/平移跟畫面震動
+  // (fieldBoxRef 本身)這兩個 transform 直接在 tick() 裡寫 DOM,不再靠
+  // `viewRef.cameraStyle`/`shakeStyle` + React re-render 套進 JSX style。
   const [, setRenderTick] = useState(0);
   const bumpRender = () => setRenderTick((t) => (t + 1) % 1000000);
 
@@ -184,6 +188,7 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
   const rafRef = useRef(null);
   const engineRef = useRef(null);
   const fieldBoxRef = useRef(null);
+  const cameraWrapRef = useRef(null); // D 類接線:鏡頭 transform 直接寫這個 ref,見上方 viewRef 旁的說明
   const bossComboRef = useRef(0);
   const heldLanesRef = useRef(new Set());
   const heldDirRef = useRef(null);
@@ -653,8 +658,14 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
       view.gateUi = gateUiNext;
       // A 類接線:攻擊特效疊圖只在觸發後短暫視窗內顯示,過了 until 就不再畫。
       view.attackFx = now < specialFxRef.current.until ? specialFxRef.current.type : null;
-      view.cameraStyle = { transform: `scale(${camState.zoom}) translate(${camState.x}px, ${camState.y}px)` };
-      view.shakeStyle = { transform: `translate(${sx}px, ${sy}px) rotate(${rotate}deg)` };
+      // D 類接線(2026-07-16 第四輪):鏡頭/震動 transform 直接寫 DOM,不再
+      // 存進 viewRef 給 JSX 的 style prop 讀,見上方 cameraWrapRef 旁的說明。
+      if (cameraWrapRef.current) {
+        cameraWrapRef.current.style.transform = `scale(${camState.zoom}) translate(${camState.x}px, ${camState.y}px)`;
+      }
+      if (fieldBoxRef.current) {
+        fieldBoxRef.current.style.transform = `translate(${sx}px, ${sy}px) rotate(${rotate}deg)`;
+      }
       view.items = {
         charges: { ...itemsRef.current.charges },
         activeUntil: { ...itemsRef.current.activeUntil },
@@ -914,9 +925,9 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
         <div ref={fieldBoxRef} style={{
           position: "relative", height: FALL_DISTANCE + 40, borderRadius: 12,
           background: "rgba(255,255,255,0.03)", border: "1px solid rgba(226,75,74,0.25)",
-          overflow: "hidden", ...viewRef.current.shakeStyle,
+          overflow: "hidden",
         }}>
-          <div style={{ position: "absolute", inset: 0, ...viewRef.current.cameraStyle }}>
+          <div ref={cameraWrapRef} style={{ position: "absolute", inset: 0 }}>
             {/* D 類接線(2026-07-16):軌道背景+彈幕本體改用單一 <canvas>
                 畫,取代原本每顆彈幕一個 div 的寫法,見上面 `drawBossField()`
                 開頭註解。 */}
