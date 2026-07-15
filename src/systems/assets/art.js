@@ -1,8 +1,9 @@
 // 搬自 web-build/index.html 第 100-146 行(ART 物件)。
 // 路徑逐字保留(相對路徑 "assets/xxx"),行為不變。
-// 實際素材檔案留在 web-build/assets/,Phase 1 尚未複製檔案本體過來，
-// 等 Phase 2 之後真的要把畫面接起來時，再把 web-build/assets/ 整包搬進
-// web-build-next/public/assets/（Vite 靜態資源慣例路徑）。
+// 2026-07-15q:實際素材檔案本體(158 個,mp3/png/json)已經從
+// web-build/assets/ 整包複製進 web-build-next/public/assets/
+// （Vite 靜態資源慣例路徑),下面這些路徑字串現在真的能讀到檔案了,
+// 詳見 systems/assets/README.md。
 export const ART = {
   menuBg:       "assets/menu-bg.png",       // 選單直式底圖
   stationScene: "assets/station-bg.png",    // 遊戲中車廂/月台場景

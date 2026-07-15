@@ -5,7 +5,7 @@
 React state 驅動的 game loop，React 只負責讀取 loop 狀態來 render UI，減少
 不必要的重繪，對應規格書「效能」要求。
 
-## 狀態：四個可玩畫面已接線 + 效能優化 + chart 模式 + 存檔接線(2026-07-15f/j/k/l)
+## 狀態：四個可玩畫面已接線 + 效能優化 + chart 模式 + 存檔接線 + 素材搬入 + 道具/肉鴿卡(2026-07-15f/j/k/l/q/r)
 
 - ⚠️ 這份文件先前一直沒更新過(一直寫「尚未實作」),但這個資料夾其實從
   2026-07-15f 起就已經有 `PlayScene.jsx` 了——這是文件跟實際進度脫節的
@@ -62,9 +62,11 @@ React state 驅動的 game loop，React 只負責讀取 loop 狀態來 render UI
 - `PlayScene.jsx` **2026-07-15l 再擴充**:可選接受 `track`(`{name,file,
   chart}`)跟 `stationIndex` 兩個 prop——有給 `track.chart` 就嘗試 fetch
   真正的譜面 JSON 換掉備援節奏(跟 `BossScene.jsx` chart 驅動模式同一套
-  「先備援墊著,拿到真資料再換」寫法,一樣因為 `web-build/assets/` 還沒
-  搬進來目前一定會 fallback);有給 `stationIndex` 的話,關卡結束時會真的
-  把過關狀態/最佳分數寫回存檔(對照 `StageMapScene` 的入口)。
+  「先備援墊著,拿到真資料再換」寫法);有給 `stationIndex` 的話,關卡
+  結束時會真的把過關狀態/最佳分數寫回存檔(對照 `StageMapScene` 的入口)。
+  **2026-07-15q 更新**:`web-build/assets/` 已經搬進 `public/assets/`,
+  這個 fetch 現在真的能抓到 `REDLINE_TRACKS`/`DEFAULT_TRACKS` 對應的
+  `.normal.json` 譜面,不再永遠 fallback,詳見 `assets/README.md`。
 - 沙箱驗證:`npm run build`(90 modules)通過,既有 8 支測試(camera/
   judge-parity/miss-wiring/particle/scene/ui/boss/npc,共 239 項斷言)+
   新增 `test-songselect.mjs`(18 項斷言:資料形狀/站點解鎖規則)全過回歸
@@ -93,16 +95,25 @@ React state 驅動的 game loop，React 只負責讀取 loop 狀態來 render UI
   Canvas/WebGL 渲染。
 - **BOSS 戰跟 NPC 系統沒有同時出現**:原始碼裡 BOSS 戰跟一般 NPC 事件
   是互斥的兩個階段,`BossScene.jsx` 沒有接 NPC 系統。
-- **BOSS chart 驅動模式目前一定會 fallback**:`web-build/assets/` 還沒
-  搬進這個專案,fetch 譜面一定失敗,詳見 `boss/README.md`。
+- ~~BOSS chart 驅動模式目前一定會 fallback~~:2026-07-15q 素材搬入後
+  已經真的能 fetch 到譜面,不再永遠 fallback,詳見 `boss/README.md`。
+- **四個場景的視覺呈現還是純色塊/emoji,沒有套用真正的美術素材**:
+  `assets/README.md` 2026-07-15q 已經把 158 個檔案本體搬進
+  `public/assets/`,但 `PlayScene.jsx`/`BossScene.jsx`/`SongSelectScene.
+  jsx`/`StageMapScene.jsx` 目前都還沒有改成 `<img src={ART.xxx}>` 真的
+  套用這些圖片,這是額外一輪視覺套用工程,留到之後排。
 - **道具/肉鴿卡/雙軌行李箱以外的平衡對抗(一般行駛間的曲道平衡對抗)**
   仍然沒有接——`PlayScene.jsx` 沒有平衡對抗小遊戲,只有 `BossScene.jsx`
   的 50%/30% 血量門檻閘門用到平衡對抗物理。
 - **`SongSelectScene`/`StageMapScene` 沒有接 `assets/songs.json` 動態
   曲目清單、沒有試聽播放**:前者固定用 `DEFAULT_TRACKS`,後者沒有播放
   原始碼點歌時的 `new Audio()` 循環試聽,詳見兩個檔案開頭註解。
-- **選站後沒有進站小遊戲/肉鴿卡三選一**:`StageMapScene` 選站直接進
-  `PlayScene`,跳過原始碼 `arrival` phase 的內容。
+- **選站後沒有真正的進站小遊戲/肉鴿卡三選一**:`StageMapScene` 選站直接
+  進 `PlayScene`,跳過原始碼 `arrival` phase 的畫面流程——`PlayScene.jsx`/
+  `BossScene.jsx` 2026-07-15r 各自有一個「🎴 抽卡(demo)」按鈕模擬三選一
+  機制本身(抽卡池排除規則/選卡套用效果都是真的),但不是掛在
+  `arrival` phase 或站與站之間的自動觸發,是手動demo 觸發,詳見下方
+  2026-07-15r 章節。
 - **結算/評級畫面沒有做**:通勤模式關卡結束只是把過關狀態/最佳分數寫
   進存檔,沒有完整的準確率/評級/判定分佈結算畫面。
 
@@ -204,3 +215,35 @@ React state 驅動的 game loop，React 只負責讀取 loop 狀態來 render UI
   全過回歸(既有測試本來就用一致的明確 `now` 呼叫,不會踩到這個陷阱,
   這次是呼叫端整合時的疏漏,不是 `camera`/`effect` 兩個系統本身的
   bug)。需要本機瀏覽器重新實測確認。
+
+## 2026-07-15q:素材本體搬入 + 2026-07-15r:道具/肉鴿卡接線
+
+使用者接著選了「1 跟 2 都做」(搬入美術/音訊素材 + 接道具/肉鴿卡系統)。
+
+- **素材搬入**:`web-build/assets/` 158 個檔案本體已經複製進
+  `public/assets/`,BOSS/選歌的 chart 驅動模式現在真的能 fetch 到資料,
+  詳見 `systems/assets/README.md`。
+- **道具/肉鴿卡**:新增 `judge/rogue.js`(`recalcRogue()`,19 張卡完整
+  數值效果)+ `judge/items.js`(`ItemManager`,4 種道具充能/必殺技集氣)+
+  `gameEngine.js` 新增 `addStability()` 公開方法,詳見 `judge/README.md`
+  2026-07-15r 章節。
+  - `PlayScene.jsx`:1/2/3/4 鍵 + 畫面按鈕啟用道具,「🎴 抽卡(demo)」
+    按鈕模擬進站三選一,`npcExtra`/`noteRateMult`/`refillCount`/
+    `regenPhone`/`prioritySeat` 全部接進 tick 迴圈。
+  - `BossScene.jsx`:也有自己的抽卡 demo,但只有 `bossDmgMult`
+    (finalsprint 卡)真的有作用——這個場景是獨立 demo,沒有道具系統跟
+    其他數值效果的呼叫端,`npcExtra`/`refillCount` 等欄位在這裡不適用
+    (BOSS 戰沒有一般 NPC,也沒有站務員事件)。
+  - 沙箱驗證:`npm run build`(92 modules)+ 既有 9 支測試回歸全過 +
+    新增 `test-items-rogue.mjs`(64 項斷言),累計 326 項斷言全綠。
+  - ⚠️ **完全沒有經過瀏覽器實測**:道具按鈕/抽卡按鈕的實際操作手感、
+    必殺技清屏效果、19 張卡各自數值影響玩起來感覺對不對,都需要你本機
+    瀏覽器實測確認。
+
+## 2026-07-15s:補上 BossScene.jsx 漏接的道具系統(使用者實測發現)
+
+使用者玩過後問「boss 對戰場沒道具是合理的嗎」——不合理,這是遺漏,不是
+刻意設計。`judge/items.js` 開頭本來就寫明道具在 BOSS 戰有專屬效果(耳機
+變傷害護盾、墨鏡讓彈幕變慢、空車票瞬間清彈幕),但上一輪(15r)只顧著
+把肉鴿卡接進 `BossScene.jsx`,忘記真的把 `ItemManager` 也接進去。已補上
+四種道具的 BOSS 分支效果,詳見 `boss/README.md` 2026-07-15s 章節。

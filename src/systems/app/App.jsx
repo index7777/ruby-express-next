@@ -298,7 +298,11 @@ export default function App() {
       { label: "assets: ART", ok: Object.keys(ART).length > 30, detail: `${Object.keys(ART).length} 個素材 key` },
       { label: "save: loadSave()", ok: !!save && Array.isArray(save.slots) && save.slots.length === 3, detail: `${save.slots.length} 存檔格` },
       { label: "save: defaultSave() 一致性", ok: JSON.stringify(defaultSave().settings) === JSON.stringify(save.settings) || true, detail: "settings 結構正常" },
-      { label: "save: clearedProgress()", ok: clearedProgress(save) === 0, detail: `${clearedProgress(save)} 站` },
+      // ⚠️ 2026-07-15s 修正:原本寫死 `=== 0`,假設存檔永遠是全新的——
+      // 但通勤路線圖/判定測試場這輪已經真的把過關進度寫進 localStorage
+      // 了,玩過一次之後這裡永遠會是 >=1,不是 bug,只是檢查項的假設過時。
+      // 改成檢查「是 0~5 之間的合理站數」,不管實際打到第幾站都算正常。
+      { label: "save: clearedProgress()", ok: clearedProgress(save) >= 0 && clearedProgress(save) <= 5, detail: `${clearedProgress(save)} 站` },
       { label: "data: BOSSES", ok: BOSSES.length === 4, detail: `${BOSSES.length} 隻 BOSS` },
       { label: "data: NPC_TYPES", ok: NPC_TYPES.length === 10, detail: `${NPC_TYPES.length} 種 NPC` },
       { label: "data: ROGUE_CARDS", ok: ROGUE_CARDS.length === 19, detail: `${ROGUE_CARDS.length} 張肉鴿卡` },

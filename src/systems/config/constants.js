@@ -68,6 +68,9 @@ export const ITEM_DEFS = {
 export const EXPRESS_NEED = 100;              // 必殺技集滿所需能量(%)
 // 每次成功判定累加的集氣量(miss 不倒扣;Perfect > Great > Good)
 export const EXPRESS_GAIN = { perfect: 4.5, great: 2.8, good: 1.6 };
+export const ITEM_MAX_CHARGE = 5; // 道具充能上限(headphone/sunglasses/clearcard)
+export const EXPRESS_SWEEP_MS = 1200; // 必殺技觸發後的「順帶清掉隨後生成音符」視窗(對照原始碼 expressUntilRef)
+export const EXPRESS_SECOND_WAVE_MS = 520; // 必殺技第二波爆炸延遲(對照原始碼)
 
 export const STAFF_DURATION_MS = 8000;
 export const BACKPACK_SCORE = 300; // 驅散一位背包客

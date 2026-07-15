@@ -17,23 +17,23 @@
 //   (目前一定會是這樣,見下一條)就退回原本的備援固定間隔模式
 //   (`spawnWave`)——這個 fallback 行為本身就是對照原始碼寫的(原始碼
 //   也是「有 chart 用 chart,沒有就退回固定間隔」),不是這次新發明的。
-// - **`web-build/assets/` 還沒搬進這個專案**(166 個檔案,見根目錄
-//   README「尚未搬入」清單),所以 chart 檔案實際上一定 fetch 不到,
-//   目前這個場景永遠會走備援固定間隔模式——chart 驅動模式的程式碼是
-//   「準備好了,等資產搬進來就能用」,不是「現在就能實測」的功能,
-//   之後真的搬入 `assets/` 資產後才需要回來實測這條路徑。
-// - 沒有 BOSS 立繪/彈幕美術素材疊圖(`web-build/assets/` 還沒搬進這個
-//   專案),彈幕/BOSS 本體都用純色塊表示。
+// - **2026-07-15q 更新:素材已搬入**,`assets/boss-bgm-<bossId>.normal.json`
+//   現在真的抓得到資料,不再永遠 fallback 到備援固定間隔模式,詳見
+//   `systems/assets/README.md`。
+// - 沒有 BOSS 立繪/彈幕美術素材疊圖——素材檔案本體雖然已經搬進
+//   `public/assets/`,但這個場景還沒有改成 `<img src={ART.xxx}>` 真的
+//   套用,彈幕/BOSS 本體目前還是畫成純色塊。
 // - 平衡對抗閘門的「抵抗方向」只接鍵盤方向鍵(←/→),沒有接手機陀螺儀
 //   (那是 `systems/config/constants.js` IS_TOUCH 判斷之後才會處理的範圍)。
 //
 // ⚠️ 完全沒有經過瀏覽器實測。
 import { useEffect, useRef, useState } from "react";
 import {
-  LANES, KEY_TO_LANE, WINDOW_GOOD, APPROACH_SEC, FALL_DISTANCE,
+  LANES, KEY_TO_LANE, WINDOW_GOOD, APPROACH_SEC, FALL_DISTANCE, ITEM_DEFS, EXPRESS_NEED,
   laneLeftExpr, laneWidthExpr, OPP_DIR, vibrate,
 } from "../config/index.js";
 import { createGameEngine } from "../judge/gameEngine.js";
+import { createItemManager } from "../judge/items.js";
 import { FxLayer } from "../effect/index.js";
 import { applyCameraPreset } from "../camera/index.js";
 import {
@@ -42,10 +42,12 @@ import {
   ParticleLayer, LightingLayer,
 } from "../particle/index.js";
 import { createBossManager } from "../boss/index.js";
+import { createDefaultRogue, recalcRogue, rollArrivalCards } from "../judge/index.js";
 import { loadSave, writeSave } from "../save/index.js";
-import { Button, ProgressBar, Dialog } from "../ui/index.js";
+import { Button, Card, ProgressBar, Dialog } from "../ui/index.js";
 
 const REVIVE_COST = 80; // 對照原始碼 confirmRevive() 的哩程扣點數
+const ITEM_KEY_MAP = { 1: "headphone", 2: "sunglasses", 3: "clearcard", 4: "express" };
 
 function laneCenterPercent(lane) {
   return (lane + 0.5) * (100 / LANES.length);
@@ -60,6 +62,9 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
   const [notice, setNotice] = useState("");
   const [outcome, setOutcome] = useState(null); // null | "win" | "lose"
   const [reviveAsk, setReviveAsk] = useState(false);
+  const [rogueCardIds, setRogueCardIds] = useState([]);
+  const [rogueOffer, setRogueOffer] = useState(null);
+  const rogueRef = useRef(createDefaultRogue()); // 目前只有 finalsprint 卡的 bossDmgMult 在這個場景有作用
   // 每幀都會變的畫面資料(彈幕位置/QTE 進度/鏡頭震動)收在這裡,不是 React
   // state,渲染時直接讀 `viewRef.current.xxx`,只靠 `renderTick` 這一顆
   // state 觸發重繪——跟 `PlayScene.jsx`/`ParticleLayer.jsx` 同樣的模式,
@@ -93,6 +98,12 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
 
   const bossRef = useRef(null);
   if (!bossRef.current) bossRef.current = createBossManager(100);
+  // 2026-07-15s 補上:道具在 BOSS 戰有自己的語意(跟一般行駛階段不同),
+  // 之前只顧著接肉鴿卡,忘記把 `judge/items.js` 接進這個場景——headphone
+  // 變傷害護盾、sunglasses 變彈幕減速、clearcard 變瞬間清彈幕,對照原始碼
+  // `useItem()` 的 boss 分支(1900-1960 行附近)。
+  const itemsRef = useRef(null);
+  if (!itemsRef.current) itemsRef.current = createItemManager();
   const particleRef = useRef(null);
   if (!particleRef.current) particleRef.current = createParticleManager();
   const lightingRef = useRef(null);
@@ -120,7 +131,18 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
     bossComboRef.current = nextCombo;
     engineRef.current.setBossCombo(nextCombo);
     const b = bossRef.current;
-    const result = b.applyHit(cat, { combo: nextCombo });
+    // finalsprint 卡(終點衝刺):BOSS 傷害 +30%,對照 `judge/rogue.js` 的
+    // `bossDmgMult` 欄位,直接餵給 `BossManager.applyHit()` 本來就有的
+    // `rogueDmgMult` 參數(Phase 9 建 boss 系統時就預留好的接口)。
+    // headphone 道具在 BOSS 戰的效果是「傷害護盾」:生效時 miss 不會自傷
+    // (對照原始碼 `shielded = invincible || (cat==="miss" &&
+    // bossShieldUntilRef.current > now)`),餵給 `applyHit()` 本來就有的
+    // `selfDmgActive` 參數(false = 自傷歸零)。
+    const result = b.applyHit(cat, {
+      combo: nextCombo,
+      rogueDmgMult: rogueRef.current.bossDmgMult,
+      selfDmgActive: !itemsRef.current.isActive("headphone", now),
+    });
     if (result.finisherTriggered) {
       b.startHoldAttack(now, true, {});
       showNotice("⚠ BOSS 搖搖欲墜!最後一擊機會來了", 1200);
@@ -136,12 +158,45 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
       applyLightingPreset(lightingRef.current, gateKey === "g50" ? "bossPhaseAlertP2" : "bossPhaseAlertP3");
     }
     b.checkDeath();
+    // 必殺技集氣:BOSS 戰的判定也會累積集氣(對照原始碼 `addExpressCharge`
+    // 沒有分 running/boss,兩種畫面都會呼叫),miss 不會呼叫到(cat==="miss"
+    // 時 `ItemManager.addExpressCharge` 內部本來就無視,這裡多一層 if 純粹
+    // 避免傳無意義的呼叫)。
+    if (cat !== "miss") itemsRef.current.addExpressCharge(cat, nextCombo, rogueRef.current.expressMult);
     if (lane != null) fx.spawn(cat === "miss" ? "miss" : cat, { x: laneCenterPercent(lane), y: 60 });
     if (cat !== "miss" && lane != null) {
       const { x, y } = laneToPx(lane);
       emitParticlePreset(particleRef.current, cat === "perfect" ? "perfectHit" : "greatHit", x, y);
     }
     setBossHp(b.hp); setPlayerHp(b.playerHp); setPhase(b.phase);
+  };
+
+  // activateItem:對照原始碼 `useItem()` 的 BOSS 分支——headphone/
+  // sunglasses 只是設定充能/啟用時間戳(實際效果在 `applyBossHit`/彈幕
+  // 生成那幾處讀取,見上面兩處註解),clearcard 是「瞬間清空盤面彈幕」
+  // (對照原始碼 boss 分支 `setNotes([])`,不是清 NPC——BOSS 戰沒有一般
+  // NPC),express 兩個階段都能用,對照原始碼「每顆爆炸的彈幕呼叫一次
+  // `bossApplyHit('perfect')`,如果因此把 BOSS 打死會標記『必殺終結』」。
+  const activateItem = (key, now) => {
+    if (key === "express") {
+      const result = itemsRef.current.fireExpress(now);
+      if (!result) { showNotice("必殺技集氣還沒滿"); return; }
+      const bullets = bulletsRef.current;
+      bulletsRef.current = [];
+      for (const bl of bullets) applyBossHit("perfect", bl.lane);
+      const { x, y } = laneToPx(2, 0.5);
+      emitParticlePreset(particleRef.current, "explosion", x, y);
+      showNotice(`⚡ 必殺技!清空 ${bullets.length} 顆彈幕`);
+      return;
+    }
+    const result = itemsRef.current.useItem(key, now, { rogue: rogueRef.current });
+    if (!result) { showNotice("充能不足"); return; }
+    if (key === "headphone") showNotice("🎧 降噪護盾啟動 · miss 不再自傷");
+    else if (key === "sunglasses") showNotice("🕶 專注 · 彈幕減速");
+    else if (key === "clearcard") {
+      bulletsRef.current = [];
+      showNotice("🎫 清屏 · 彈幕清空");
+    }
   };
 
   if (!engineRef.current) {
@@ -197,6 +252,21 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
       const t = beatClockRef.current;
       const b = bossRef.current;
 
+      // sunglasses 道具在 BOSS 戰的效果是「彈幕減速」(對照原始碼
+      // `bossSlowUntilRef`,APPROACH_SEC*1.7)。
+      // ⚠️ 2026-07-15t 修正:之前雖然算出了拉長的 `hitTime`,但畫面渲染
+      // (下面 JSX 的 `progress` 計算)一直是拿固定的 `APPROACH_SEC` 當
+      // 分母,沒有讀彈幕自己的 `fallSec`——結果彈幕會在畫面最上方卡住不動
+      // 一小段時間、然後用「正常速度」掉完最後一段,肉眼看起來完全沒有
+      // 變慢(這是使用者實測抓到的 bug)。改成每顆彈幕都帶自己的
+      // `fallSec`,渲染時用 `n.fallSec` 當分母,才會是真正貫穿全程的
+      // 均勻減速。chart 驅動模式原本也沒套用 sunglasses(怕跟歌曲節奏
+      // 對不上),但只調整「音符提早進入下落範圍的時間點」不會動到
+      // `hitTime`(判定目標時間不變,跟歌曲節奏依然同步),所以這次一併
+      // 套用,不用再等之後才修。
+      const slowActive = itemsRef.current.isActive("sunglasses", now);
+      const slowAppr = slowActive ? APPROACH_SEC * 1.7 : APPROACH_SEC;
+
       if (!b.outcome && !b.hold && !b.gate) {
         if (chartLoadedRef.current) {
           // ── chart 驅動模式(對照原始碼 bossChartRef 分支,2139 行)──
@@ -204,16 +274,16 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
           // (同軌 0.35s 內已有音符就跳過,對照原始碼 2136 行)+ P2/P3
           // 依 `rollExtraChartNote()` 機率多插一顆(挑一個不同的軌道)。
           const chart = chartRef.current;
-          while (chartIdxRef.current < chart.length && chart[chartIdxRef.current].hitTime - APPROACH_SEC <= t) {
+          while (chartIdxRef.current < chart.length && chart[chartIdxRef.current].hitTime - slowAppr <= t) {
             const c = chart[chartIdxRef.current];
             chartIdxRef.current += 1;
             const busy = bulletsRef.current.some((n) => n.lane === c.lane && Math.abs(n.hitTime - c.hitTime) < 0.35);
             if (busy) continue;
-            bulletsRef.current.push({ id: `chart-${chartIdxRef.current}`, lane: c.lane, hitTime: c.hitTime });
+            bulletsRef.current.push({ id: `chart-${chartIdxRef.current}`, lane: c.lane, hitTime: c.hitTime, fallSec: slowAppr });
             const extra = b.rollExtraChartNote(Math.random);
             if (extra) {
               const extraLane = (c.lane + 1 + Math.floor(Math.random() * (LANES.length - 1))) % LANES.length;
-              bulletsRef.current.push({ id: `chart-extra-${chartIdxRef.current}`, lane: extraLane, hitTime: c.hitTime + extra.delaySec });
+              bulletsRef.current.push({ id: `chart-extra-${chartIdxRef.current}`, lane: extraLane, hitTime: c.hitTime + extra.delaySec, fallSec: slowAppr });
             }
           }
         } else {
@@ -227,8 +297,8 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
             // `t`,否則反堆疊完全沒作用。
             const landTime = t + APPROACH_SEC;
             const isLaneFree = (lane) => !bulletsRef.current.some((n) => Math.abs(n.hitTime - landTime) < 0.4 && n.lane === lane);
-            const wave = b.spawnWave(t, { isLaneFree, rand: Math.random });
-            for (const w of wave) bulletsRef.current.push({ id: `bullet-${now}-${w.lane}-${Math.random().toString(36).slice(2, 6)}`, lane: w.lane, hitTime: w.hitTime });
+            const wave = b.spawnWave(t, { isLaneFree, slowActive, rand: Math.random });
+            for (const w of wave) bulletsRef.current.push({ id: `bullet-${now}-${w.lane}-${Math.random().toString(36).slice(2, 6)}`, lane: w.lane, hitTime: w.hitTime, fallSec: w.fallSec });
           }
         }
         // 特殊招式(訊號干擾/口水噴濺)——兩種彈幕模式都會觸發,對照原始碼
@@ -236,8 +306,8 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
         if (now - lastSpecialAtRef.current >= b.specialIntervalMs()) {
           lastSpecialAtRef.current = now;
           const move = b.rollSpecialMove(Math.random);
-          const bullets = b.specialMoveBullets(move, t, { rand: Math.random });
-          for (const bl of bullets) bulletsRef.current.push({ id: `special-${now}-${bl.lane}-${Math.random().toString(36).slice(2, 6)}`, lane: bl.lane, hitTime: bl.hitTime });
+          const bullets = b.specialMoveBullets(move, t, { rand: Math.random, slowActive });
+          for (const bl of bullets) bulletsRef.current.push({ id: `special-${now}-${bl.lane}-${Math.random().toString(36).slice(2, 6)}`, lane: bl.lane, hitTime: bl.hitTime, fallSec: bl.fallSec });
           showNotice(move === "signal" ? "📶 訊號很差啦!" : "💧 口水噴濺 · 看不清了!");
         }
       }
@@ -322,6 +392,13 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
       view.gateUi = gateUiNext;
       view.cameraStyle = { transform: `scale(${camState.zoom}) translate(${camState.x}px, ${camState.y}px)` };
       view.shakeStyle = { transform: `translate(${sx}px, ${sy}px) rotate(${rotate}deg)` };
+      view.items = {
+        charges: { ...itemsRef.current.charges },
+        activeUntil: { ...itemsRef.current.activeUntil },
+        expressCharge: itemsRef.current.expressCharge,
+        expressReady: itemsRef.current.expressReady,
+        now,
+      };
       bumpRender();
 
       rafRef.current = requestAnimationFrame(tick);
@@ -329,6 +406,8 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
     rafRef.current = requestAnimationFrame(tick);
 
     const onKeyDown = (e) => {
+      const itemKey = ITEM_KEY_MAP[e.key];
+      if (itemKey) { activateItem(itemKey, performance.now()); return; }
       const laneIdx = KEY_TO_LANE[e.key.toLowerCase()];
       if (laneIdx !== undefined) {
         heldLanesRef.current.add(laneIdx);
@@ -377,7 +456,15 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
     setReviveAsk(false);
     setOutcome(null);
     setPlayerHp(bossRef.current.playerHp);
-    showNotice(`哩程 -${REVIVE_COST} · 復活成功 · 3 秒無敵!(剩餘哩程 ${save.points})`);
+    // ⚠️ 2026-07-15t 補上:對照原始碼 `confirmRevive()`(3387 行)——復活
+    // 接關除了回滿血、給 3 秒無敵(這兩個 `bossManager.revive()` 內部已經
+    // 處理),還會「必殺集氣全滿」當作復活獎勵的一部分,之前漏接這個效果。
+    // ⚠️ 道具「充能次數」原始碼註解明講「死亡演出中沒有被清空,不用額外
+    // 處理」——這裡本來就沒有動 `itemsRef.current.charges`,維持死亡前的
+    // 數量,是對的,不要加。
+    itemsRef.current.expressCharge = EXPRESS_NEED;
+    itemsRef.current.expressReady = true;
+    showNotice(`哩程 -${REVIVE_COST} · 復活成功 · 必殺集氣全滿 · 3 秒無敵!(剩餘哩程 ${save.points})`);
   };
   const doRetry = () => {
     bossRef.current.retry();
@@ -389,6 +476,22 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
     engineRef.current.reset();
     setOutcome(null); setReviveAsk(false); setScore(0);
     setBossHp(100); setPlayerHp(100); setPhase(1);
+  };
+
+  // 肉鴿卡(demo)——這個場景只有 finalsprint(終點衝刺:BOSS 傷害 +30%)
+  // 真的有作用(其他卡的效果屬於一般行駛階段/道具系統,見
+  // `PlayScene.jsx`),但抽卡池/選卡流程共用同一套 `judge/rogue.js`。
+  const rollRogue = () => {
+    const offer = rollArrivalCards(rogueCardIds, 3, Math.random);
+    if (offer.length === 0) { showNotice("卡池已經抽完了"); return; }
+    setRogueOffer(offer);
+  };
+  const pickRogue = (card) => {
+    const nextIds = [...rogueCardIds, card.id];
+    setRogueCardIds(nextIds);
+    setRogueOffer(null);
+    rogueRef.current = recalcRogue(nextIds);
+    showNotice(`🎴 選了「${card.name}」`);
   };
 
   return (
@@ -403,9 +506,12 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
           <Button variant="ghost" onClick={onExit}>離開</Button>
         </div>
 
-        <div style={{ display: "flex", gap: 14, fontSize: 13, marginBottom: 8 }}>
+        <div style={{ display: "flex", gap: 14, fontSize: 13, marginBottom: 8, alignItems: "center" }}>
           <span>分數 <b>{score}</b></span>
           <span>階段 <b style={{ color: "#FF9F45" }}>P{phase}</b></span>
+          <Button variant="ghost" style={{ fontSize: 11, marginLeft: "auto" }} onClick={rollRogue}>
+            🎴 抽卡(demo){rogueCardIds.length > 0 ? ` · ${rogueCardIds.length} 張` : ""}
+          </Button>
         </div>
 
         <div style={{ marginBottom: 6 }}>
@@ -420,6 +526,33 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
         {notice && (
           <div style={{ marginBottom: 8, padding: "6px 10px", borderRadius: 8, background: "rgba(255,215,0,0.1)", fontSize: 12, textAlign: "center" }}>
             {notice}
+          </div>
+        )}
+
+        {viewRef.current.items && (
+          <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+            {["headphone", "sunglasses", "clearcard"].map((key, i) => {
+              const def = ITEM_DEFS[key];
+              const charges = viewRef.current.items.charges[key];
+              const active = viewRef.current.items.now < viewRef.current.items.activeUntil[key];
+              return (
+                <Button
+                  key={key}
+                  variant={active ? "primary" : "secondary"}
+                  style={{ flex: 1, fontSize: 11, opacity: charges > 0 ? 1 : 0.4, borderColor: def.color, color: active ? undefined : def.color }}
+                  onClick={() => activateItem(key, performance.now())}
+                >
+                  {i + 1}·{def.label}({charges})
+                </Button>
+              );
+            })}
+            <Button
+              variant={viewRef.current.items.expressReady ? "primary" : "ghost"}
+              style={{ flex: 1, fontSize: 11 }}
+              onClick={() => activateItem("express", performance.now())}
+            >
+              4·{viewRef.current.items.expressReady ? "必殺!" : `${Math.floor(viewRef.current.items.expressCharge)}%`}
+            </Button>
           </div>
         )}
 
@@ -439,7 +572,7 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
             ))}
             <div style={{ position: "absolute", left: 0, right: 0, top: FALL_DISTANCE, height: 2, background: "#FFFFFF", opacity: 0.5 }} />
             {viewRef.current.bullets.map((n) => {
-              const progress = Math.max(0, Math.min(1.05, 1 - (n.hitTime - beatClockRef.current) / APPROACH_SEC));
+              const progress = Math.max(0, Math.min(1.05, 1 - (n.hitTime - beatClockRef.current) / (n.fallSec || APPROACH_SEC)));
               return (
                 <div key={n.id} style={{
                   position: "absolute", left: `calc(${laneLeftExpr(n.lane)})`, width: `calc(${laneWidthExpr})`,
@@ -509,6 +642,17 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
         </div>
         <Button variant="primary" onClick={doRetry} style={{ width: "100%", marginBottom: 8 }}>再戰一次</Button>
         <Button variant="ghost" onClick={onExit} style={{ width: "100%" }}>回月台</Button>
+      </Dialog>
+
+      <Dialog open={!!rogueOffer} title="🎴 抽到 3 張肉鴿卡(demo)">
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
+          {(rogueOffer || []).map((card) => (
+            <Card key={card.id} onClick={() => pickRogue(card)} style={{ flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>{card.icon} {card.name}{card.type === "deal" ? " (惡魔交易)" : ""}</div>
+              <div style={{ fontSize: 12, opacity: 0.8 }}>{card.desc}</div>
+            </Card>
+          ))}
+        </div>
       </Dialog>
     </div>
   );

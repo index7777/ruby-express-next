@@ -1,5 +1,5 @@
 import { createBossManager, phaseForHp } from "./src/systems/boss/bossManager.js";
-import { BOSS_HP, PLAYER_HP, BOSS_DMG_PER_HIT, BOSS_FINISHER_HP } from "./src/systems/config/index.js";
+import { BOSS_HP, PLAYER_HP, BOSS_DMG_PER_HIT, BOSS_FINISHER_HP, APPROACH_SEC } from "./src/systems/config/index.js";
 
 let pass = 0, fail = 0;
 function assert(cond, label) {
@@ -190,6 +190,17 @@ function near(a, b, eps = 1e-6) { return Math.abs(a - b) < eps; }
   assert(Math.abs(lanes[1] - lanes[0]) === 1 && Math.abs(lanes[2] - lanes[1]) === 1, "sweep 三顆是連續軌道");
 }
 
+// spawnWave:每顆彈幕都要帶 `fallSec`,渲染端才能算出正確的減速下落曲線
+// (2026-07-15t 迴歸測試——之前 `fallSec` 雖然算出來了,但呼叫端塞進畫面
+// 陣列時漏掉這個欄位,導致 sunglasses 減速視覺上完全沒有效果)。
+{
+  const boss = createBossManager();
+  const normal = boss.spawnWave(0, { rand: () => 0.9 });
+  assert(normal[0].fallSec === APPROACH_SEC, "沒開減速時 fallSec 就是正常的 APPROACH_SEC");
+  const slowed = boss.spawnWave(0, { rand: () => 0.9, slowActive: true });
+  assert(near(slowed[0].fallSec, APPROACH_SEC * 1.7), "sunglasses 生效時 fallSec 拉長為 1.7 倍");
+}
+
 // rollSpecialMove:phase 1 只有 signal,phase 2/3 可能是 spit
 {
   const boss = createBossManager();
@@ -206,6 +217,16 @@ function near(a, b, eps = 1e-6) { return Math.abs(a - b) < eps; }
   assert(bullets.length === 5, "phase 3 signal 生 5 顆");
   const uniqueLanes = new Set(bullets.map((b) => b.lane));
   assert(uniqueLanes.size === bullets.length, "signal 每顆都在不同軌道");
+  assert(bullets.every((bl) => bl.fallSec === APPROACH_SEC), "specialMoveBullets 每顆也要帶 fallSec(2026-07-15t 迴歸測試)");
+}
+
+// specialMoveBullets:slowActive(墨鏡道具生效)讓特招彈幕也套用 1.7 倍
+// 下落時間,2026-07-15s 補上(之前只有 spawnWave() 接了這個參數)。
+{
+  const boss = createBossManager();
+  const normal = boss.specialMoveBullets("spit", 0, { rand: () => 0 });
+  const slowed = boss.specialMoveBullets("spit", 0, { rand: () => 0, slowActive: true });
+  assert(near(slowed[0].hitTime - normal[0].hitTime, APPROACH_SEC * 0.7), "sunglasses 生效時特招彈幕的下落時間對照多拉長 APPROACH_SEC*0.7(即 1.7 倍)");
 }
 
 // rollExtraChartNote:phase 1 永遠不插,phase 2/3 依機率/延遲不同

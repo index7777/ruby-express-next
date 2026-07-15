@@ -167,8 +167,11 @@ export class BossManager {
 
   // ── 特殊招式對應的彈幕(對照 signalAttack/spitAttack,3277-3298 行)──
   // signal:洗牌後每軌各生一顆,保證不同軌(避免同軌疊到打不完);
-  // spit:2 顆隨機軌道,固定延遲 0.1s / 0.5s。
-  specialMoveBullets(move, now, { rand = defaultRand } = {}) {
+  // spit:2 顆隨機軌道,固定延遲 0.1s / 0.5s。`slowActive` 對照墨鏡道具生效
+  // 時彈幕下降變慢,跟 `spawnWave()` 共用同一個 1.7 倍係數,2026-07-15s
+  // 補上(先前只有 `spawnWave()` 接了這個參數,特招彈幕漏接)。
+  specialMoveBullets(move, now, { rand = defaultRand, slowActive = false } = {}) {
+    const appr = slowActive ? APPROACH_SEC * 1.7 : APPROACH_SEC;
     if (move === "signal") {
       const n = this.phase === 3 ? 5 : 4;
       const lanes = Array.from({ length: LANE_COUNT }, (_, i) => i);
@@ -176,14 +179,14 @@ export class BossManager {
         const j = Math.floor(rand() * (i + 1));
         [lanes[i], lanes[j]] = [lanes[j], lanes[i]];
       }
-      return lanes.slice(0, n).map((lane, k) => ({ lane, delay: k * 0.16, hitTime: now + APPROACH_SEC + k * 0.16 }));
+      return lanes.slice(0, n).map((lane, k) => ({ lane, delay: k * 0.16, hitTime: now + appr + k * 0.16, fallSec: appr }));
     }
     // spit
     const a = Math.floor(rand() * LANE_COUNT);
     const b = Math.floor(rand() * LANE_COUNT);
     return [
-      { lane: a, delay: 0.1, hitTime: now + APPROACH_SEC + 0.1 },
-      { lane: b, delay: 0.5, hitTime: now + APPROACH_SEC + 0.5 },
+      { lane: a, delay: 0.1, hitTime: now + appr + 0.1, fallSec: appr },
+      { lane: b, delay: 0.5, hitTime: now + appr + 0.5, fallSec: appr },
     ];
   }
 

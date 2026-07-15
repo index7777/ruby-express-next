@@ -41,10 +41,14 @@
 import { useEffect, useRef, useState } from "react";
 import {
   LANES, KEY_TO_LANE, WINDOW_GOOD, APPROACH_SEC, FALL_DISTANCE,
-  laneLeftExpr, laneWidthExpr, JUDGE_LABEL, vibrate,
+  laneLeftExpr, laneWidthExpr, JUDGE_LABEL, ITEM_DEFS, vibrate,
 } from "../config/index.js";
 import { buildChart } from "../judge/index.js";
 import { createGameEngine } from "../judge/gameEngine.js";
+import {
+  createItemManager, expressBlastResult,
+  createDefaultRogue, recalcRogue, rollArrivalCards,
+} from "../judge/index.js";
 import { FxLayer } from "../effect/index.js";
 import { applyCameraPreset } from "../camera/index.js";
 import {
@@ -54,10 +58,11 @@ import {
 } from "../particle/index.js";
 import { createNpcManager } from "../npc/index.js";
 import { loadSave, writeSave } from "../save/index.js";
-import { Button, ProgressBar } from "../ui/index.js";
+import { Button, Card, Dialog, ProgressBar } from "../ui/index.js";
 
 const CHART_CYCLES = 6; // 16 步/cycle * BEAT_SEC(0.6s) ≈ 9.6 秒/cycle,約 1 分鐘的備援節奏
 const NPC_ROLL_INTERVAL_MS = 3000; // 對照原始碼 npcRollTimerRef 的抽選間隔
+const ITEM_KEY_MAP = { 1: "headphone", 2: "sunglasses", 3: "clearcard", 4: "express" };
 
 function laneCenterPercent(lane) {
   return (lane + 0.5) * (100 / LANES.length);
@@ -77,9 +82,12 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
   const [counts, setCounts] = useState({ perfect: 0, great: 0, good: 0, miss: 0 });
   const [imbalanceActive, setImbalanceActive] = useState(false);
   const [ended, setEnded] = useState(false);
+  const [rogueCardIds, setRogueCardIds] = useState([]);
+  const [rogueOffer, setRogueOffer] = useState(null); // 抽卡 demo:目前待選的 3 張卡,null=沒在選卡
+  const [notice, setNotice] = useState("");
   // 每幀都會變的畫面資料收在這裡(不是 React state),渲染時直接讀
   // `viewRef.current.xxx`,只靠 `renderTick` 這一顆 state 觸發重繪。
-  const viewRef = useRef({ notes: [], bombs: [], noise: [], npcs: [], cameraStyle: {}, shakeStyle: {} });
+  const viewRef = useRef({ notes: [], bombs: [], noise: [], npcs: [], cameraStyle: {}, shakeStyle: {}, items: null });
   const [, setRenderTick] = useState(0);
   const bumpRender = () => setRenderTick((t) => (t + 1) % 1000000);
 
@@ -95,6 +103,8 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
   const npcRollAtRef = useRef(0);
   const resultSavedRef = useRef(false); // 通勤模式(有傳 stationIndex)結束時只寫存檔一次
   const endedRef = useRef(false); // 對照 `ended` state,但給 tick() 內部讀(避免 stale closure),播完後徹底停掉 tick 迴圈用
+  const comboRef = useRef(0); // 鏡像 `combo` state,給 engine callback(閉包只建立一次)讀即時值用,理由同其他「讀 ref 不讀 state」的修正
+  const noticeTimerRef = useRef(null);
 
   const particleRef = useRef(null);
   if (!particleRef.current) particleRef.current = createParticleManager();
@@ -102,6 +112,76 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
   if (!lightingRef.current) lightingRef.current = createLightingManager();
   const npcRef = useRef(null);
   if (!npcRef.current) npcRef.current = createNpcManager();
+  const itemsRef = useRef(null);
+  if (!itemsRef.current) itemsRef.current = createItemManager();
+  const rogueRef = useRef(createDefaultRogue()); // 目前已選卡片重新算出的 rogue 狀態,同步餵給 engine.setRogue()
+
+  const showNotice = (text, durationMs = 1600) => {
+    setNotice(text);
+    clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = setTimeout(() => setNotice(""), durationMs);
+  };
+
+  // activateItem:對照原始碼 `useItem()` 的一般行駛階段分支(BOSS 分支的
+  // headphone=護盾/sunglasses=彈幕減速/clearcard=清彈幕由 `BossScene.jsx`
+  // 自己接,不是這裡)。1/2/3/4 鍵跟畫面按鈕共用同一個函式。
+  const activateItem = (key, now) => {
+    if (key === "express") {
+      const result = itemsRef.current.fireExpress(now);
+      if (!result) { showNotice("必殺技集氣還沒滿"); return; }
+      // 對照 `expressBlast()`:炸掉盤面上所有音符/雜訊/炸彈,一般行駛
+      // 階段每顆固定算 Perfect(100 分),回穩上限 12。
+      const total = notesRef.current.length + npcRef.current.bombs.length + npcRef.current.noise.length;
+      notesRef.current = [];
+      npcRef.current.bombs = [];
+      npcRef.current.noise = [];
+      if (total > 0) {
+        const { scoreDelta, stabilityDelta } = expressBlastResult(total);
+        setScore((s) => s + scoreDelta);
+        engineRef.current.addStability(stabilityDelta, undefined, now);
+      }
+      const { x, y } = laneToPx(2, 0.5);
+      emitParticlePreset(particleRef.current, "explosion", x, y);
+      showNotice(`⚡ 必殺技!清空 ${total} 顆音符`);
+      return;
+    }
+    const result = itemsRef.current.useItem(key, now, { rogue: rogueRef.current });
+    if (!result) { showNotice("充能不足"); return; }
+    if (key === "sunglasses") {
+      engineRef.current.setItems({ sunglasses: { activeUntil: result.activeUntil } });
+      showNotice("🕶 墨鏡啟動 · Perfect 判定窗變寬(若持有墨鏡達人卡)");
+    } else if (key === "clearcard") {
+      // 對照原始碼 running 分支:`setNpcs([])` 清空 NPC 實體(不動已經丟出
+      // 的雜訊/炸彈,對照 Phase 9 npc/README.md 記錄過的同一個職責邊界)。
+      npcRef.current.active = [];
+      showNotice("🎫 清屏 · NPC 清空");
+    } else if (key === "headphone") {
+      // 對照研究結論:原始碼 running 分支的 headphone 目前只有設定
+      // activeUntil,沒有找到其他明確的機制效果(BOSS 分支才是護盾),
+      // 這裡忠實保留這個「看起來沒做什麼」的行為,不額外發明效果。
+      showNotice("🎧 降噪耳機啟動");
+    }
+  };
+
+  // ── 肉鴿卡(demo)── 這個場景沒有真正的「進站」多站流程,用一個按鈕
+  // 模擬原始碼的「arrival 三選一」:排除已選過的卡,抽 3 張供選,選一張
+  // 就 recalcRogue() 重算全部效果餵給 engine,monthlypass 額外觸發
+  // `refillAll()`(它的效果是選卡當下的一次性 side effect,不是
+  // recalcRogue 算出來的常駐欄位,見 `judge/rogue.js` 開頭註解)。
+  const rollRogue = () => {
+    const offer = rollArrivalCards(rogueCardIds, 3, Math.random);
+    if (offer.length === 0) { showNotice("卡池已經抽完了"); return; }
+    setRogueOffer(offer);
+  };
+  const pickRogue = (card) => {
+    const nextIds = [...rogueCardIds, card.id];
+    setRogueCardIds(nextIds);
+    setRogueOffer(null);
+    rogueRef.current = recalcRogue(nextIds);
+    engineRef.current.setRogue(rogueRef.current);
+    if (card.id === "monthlypass") itemsRef.current.refillAll();
+    showNotice(`🎴 選了「${card.name}」`);
+  };
 
   const laneCenter = (lane) => `${laneCenterPercent(lane)}%`;
 
@@ -119,7 +199,7 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
     engineRef.current = createGameEngine({
       onScoreDelta: (delta) => setScore((s) => s + delta),
       onCountIncrement: (category) => setCounts((c) => ({ ...c, [category]: c[category] + 1 })),
-      onComboChange: (next) => { setCombo(next); setMaxCombo((mc) => Math.max(mc, next)); },
+      onComboChange: (next) => { setCombo(next); setMaxCombo((mc) => Math.max(mc, next)); comboRef.current = next; },
       onStabilityChange: (next, _delta, source) => {
         setStability(next);
         if (source === "imbalance-recover") setImbalanceActive(false);
@@ -151,6 +231,13 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
       onPlayDrum: (lane, category) => {
         const laneKey = LANES[lane] ? LANES[lane].key : "kick";
         audio.playDrum(laneKey, category);
+        // 道具/肉鴿卡接線:必殺技集氣,對照原始碼 `addExpressCharge()` 在
+        // 每次 Perfect/Great/Good 判定時呼叫(miss 不會呼叫到,`onPlayDrum`
+        // 本身就是 registerHit 一開始就會跑的 callback,涵蓋所有判定類別,
+        // `ItemManager.addExpressCharge()` 內部對 miss 直接無視,兩層防呆
+        // 都有,不影響行為)。讀 `comboRef.current`(不是 `combo` state,
+        // 避免 stale closure)當「這次命中前的 combo」。
+        itemsRef.current.addExpressCharge(category, comboRef.current, rogueRef.current.expressMult);
       },
       onPlayComboFanfare: () => audio.playComboFanfare(),
       onVibrate: (pattern) => vibrate(pattern),
@@ -245,6 +332,14 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
         const c = chart[nextIdxRef.current];
         notesRef.current = [...notesRef.current, { id: c.id, lane: c.lane, hitTime: c.hitTime }];
         nextIdxRef.current += 1;
+        // doublebeat 卡的 noteRateMult:機率插一顆額外音符在別的軌道,對照
+        // 原始碼「(noteRateMult||1)>1 時,依 (noteRateMult-1) 機率多生一顆」
+        // 的機率密度提升寫法(不是固定間隔變快,是機率性補一顆)。
+        const noteRateMult = rogueRef.current.noteRateMult || 1;
+        if (noteRateMult > 1 && Math.random() < noteRateMult - 1) {
+          const extraLane = (c.lane + 1 + Math.floor(Math.random() * (LANES.length - 1))) % LANES.length;
+          notesRef.current = [...notesRef.current, { id: `${c.id}-extra`, lane: extraLane, hitTime: c.hitTime }];
+        }
       }
 
       // ── NPC 接線(Phase 9)── 每 3000ms 嘗試抽一次(對照 npcRollTimerRef),
@@ -261,7 +356,11 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
         // state 變數會是舊值(stale closure),讀 engine 內部狀態才會是
         // 當下最新的穩定度。
         const liveStability = engineRef.current.getState().stability;
-        const type = npc.rollSpawn(now, { npcWeight: 1, npcCap: 2, stability: liveStability }, Math.random);
+        // rushpay 卡的 npcExtra 直接加進並存上限(對照原始碼 `idxState.npcCap
+        // + (stability<30?1:0) + npcExtra`,`npcManager.rollSpawn()` 本身
+        // 已經處理 stability<30 那一段,這裡只需要把 npcExtra 加進 npcCap)。
+        const npcCap = 2 + (rogueRef.current.npcExtra || 0);
+        const type = npc.rollSpawn(now, { npcWeight: 1, npcCap, stability: liveStability }, Math.random);
         if (type) npc.spawn(type, now, { rand: Math.random });
       }
       // ⚠️ 2026-07-15n 修正:這裡原本錯誤地拿「現在 t」去比對盤面音符,但
@@ -292,6 +391,23 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
       npc.noise = npc.noise.filter((n) => t <= n.hitTime + WINDOW_GOOD);
       npc.bombs = npc.bombs.filter((b) => t <= b.hitTime + WINDOW_GOOD);
 
+      // 道具/肉鴿卡接線:站務員巡查通過補道具(對照原始碼「🎉 巡查通過」,
+      // 補幾次由 loyalty/announce 卡的 `refillCount` 決定,對照原始碼
+      // `for (let i=0;i<rogueRef.current.refillCount;i++) refillRandomItem()`)。
+      // 這個 hook 之前 Phase 9 NPC 接線時就有 `staffResult` 可用,只是當時
+      // 道具系統還沒接,一直沒真的消費過,這次補上。
+      if (npcResult.staffResult?.success) {
+        for (let i = 0; i < (rogueRef.current.refillCount || 1); i++) {
+          const refilled = itemsRef.current.refillRandomItem(Math.random);
+          if (refilled) showNotice(`🎉 巡查通過 · ${ITEM_DEFS[refilled].label} +1`);
+        }
+      }
+      // regenphone/priorityseat 卡的計時器效果。
+      const regenResult = itemsRef.current.tickRegenPhone(now, rogueRef.current.regenPhone);
+      if (regenResult) showNotice(`♻️ 再生耳機 · 降噪耳機 +1(現在 ${regenResult.charges})`);
+      const seatResult = itemsRef.current.tickPrioritySeat(now, rogueRef.current.prioritySeat);
+      if (seatResult) engineRef.current.addStability(seatResult.stabilityDelta, undefined, now);
+
       // 增益 NPC 效果:直接對照 active 清單推導出的「有效到」時間戳,餵給
       // gameEngine 既有的 setBuffXxxUntil() API(這兩個 setter 是 Phase 3
       // 就設計好、專門留給 NPC 系統接線用的,見 `judge/gameEngine.js` 開頭
@@ -300,6 +416,10 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
       engineRef.current.setBuffGoodToPerfectUntil(policeNpc ? policeNpc.bornAt + policeNpc.durationMs : 0);
       const conductorNpc = npc.active.find((n) => n.type === "conductor");
       engineRef.current.setBuffMissImmuneUntil(conductorNpc ? conductorNpc.bornAt + conductorNpc.durationMs : 0);
+      // 墨鏡(sunglasses)的 perfWindowMult 加成要靠 `items.sunglasses.
+      // activeUntil` 這個 gate(對照 shades 卡的機制,見 `judge/gameEngine.js`
+      // judgeCore 233 行附近的 pwin 算式),每幀同步一次,不用擔心漏同步。
+      engineRef.current.setItems({ sunglasses: { activeUntil: itemsRef.current.activeUntil.sunglasses } });
 
       // 驅散規則(對照 maybeDismissNpc):擴音上班族/亂跑小孩用連續判定
       // 門檻驅散,背包客疊層用另一套較低門檻的連續 Perfect 拍掉。
@@ -333,6 +453,13 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
       view.npcs = npc.active.map((n) => ({ id: n.id, type: n.type, remainMs: Math.max(0, n.durationMs - (now - n.bornAt)) }));
       view.cameraStyle = { transform: `scale(${camState.zoom}) translate(${camState.x}px, ${camState.y}px)` };
       view.shakeStyle = { transform: `translate(${sx}px, ${sy}px) rotate(${rotate}deg)` };
+      view.items = {
+        charges: { ...itemsRef.current.charges },
+        activeUntil: { ...itemsRef.current.activeUntil },
+        expressCharge: itemsRef.current.expressCharge,
+        expressReady: itemsRef.current.expressReady,
+        now,
+      };
       bumpRender();
 
       // 「播完了沒」只看備援譜面本身的音符還有沒有沒打到的(`kind !==
@@ -379,6 +506,8 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
     rafRef.current = requestAnimationFrame(tick);
 
     const onKeyDown = (e) => {
+      const itemKey = ITEM_KEY_MAP[e.key];
+      if (itemKey) { activateItem(itemKey, performance.now()); return; }
       const laneIdx = KEY_TO_LANE[e.key.toLowerCase()];
       if (laneIdx === undefined) return;
       const now = performance.now();
@@ -419,6 +548,46 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
         <div style={{ marginBottom: 10 }}>
           <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 2 }}>穩定度 {stability.toFixed(0)}{imbalanceActive ? "(嚴重失衡中,輸入鎖定)" : ""}</div>
           <ProgressBar value={stability / 100} color={imbalanceActive ? "#FF3B3B" : undefined} />
+        </div>
+
+        {notice && (
+          <div style={{ marginBottom: 8, padding: "6px 10px", borderRadius: 8, background: "rgba(255,215,0,0.1)", fontSize: 12, textAlign: "center" }}>
+            {notice}
+          </div>
+        )}
+
+        {viewRef.current.items && (
+          <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+            {["headphone", "sunglasses", "clearcard"].map((key, i) => {
+              const def = ITEM_DEFS[key];
+              const charges = viewRef.current.items.charges[key];
+              const active = viewRef.current.items.now < viewRef.current.items.activeUntil[key];
+              return (
+                <Button
+                  key={key}
+                  variant={active ? "primary" : "secondary"}
+                  style={{ flex: 1, fontSize: 11, opacity: charges > 0 ? 1 : 0.4, borderColor: def.color, color: active ? undefined : def.color }}
+                  onClick={() => activateItem(key, performance.now())}
+                >
+                  {i + 1}·{def.label}({charges})
+                </Button>
+              );
+            })}
+            <Button
+              variant={viewRef.current.items.expressReady ? "primary" : "ghost"}
+              style={{ flex: 1, fontSize: 11 }}
+              onClick={() => activateItem("express", performance.now())}
+            >
+              4·{viewRef.current.items.expressReady ? "必殺!" : `${Math.floor(viewRef.current.items.expressCharge)}%`}
+            </Button>
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 11, opacity: 0.75 }}>
+            肉鴿卡:{rogueCardIds.length === 0 ? "(尚未選過)" : rogueCardIds.map((id) => id).join(", ")}
+          </div>
+          <Button variant="ghost" style={{ fontSize: 11 }} onClick={rollRogue}>🎴 抽卡(demo)</Button>
         </div>
 
         <div ref={fieldBoxRef} style={{
@@ -501,6 +670,17 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
           </div>
         )}
       </div>
+
+      <Dialog open={!!rogueOffer} title="🎴 抽到 3 張肉鴿卡(demo)">
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
+          {(rogueOffer || []).map((card) => (
+            <Card key={card.id} onClick={() => pickRogue(card)} style={{ flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>{card.icon} {card.name}{card.type === "deal" ? " (惡魔交易)" : ""}</div>
+              <div style={{ fontSize: 12, opacity: 0.8 }}>{card.desc}</div>
+            </Card>
+          ))}
+        </div>
+      </Dialog>
     </div>
   );
 }

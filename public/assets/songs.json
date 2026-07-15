@@ -1,0 +1,29 @@
+{
+ "songs": [
+  {
+   "name": "捷運 Pulse",
+   "file": "assets/Pulse.mp3",
+   "chart": "assets/charts/Pulse.normal.json"
+  },
+  {
+   "name": "地下鉄のライン",
+   "file": "assets/bgm.mp3",
+   "chart": "assets/charts/bgm.normal.json"
+  },
+  {
+   "name": "捷運快線",
+   "file": "assets/express.mp3",
+   "chart": "assets/charts/express.normal.json"
+  },
+  {
+   "name": "別在捷運放閃",
+   "file": "assets/紅線的眼界.mp3",
+   "chart": "assets/charts/紅線的眼界.normal.json"
+  },
+  {
+   "name": "是誰拿炸雞上捷運",
+   "file": "assets/是誰拿炸雞上捷運.mp3",
+   "chart": "assets/charts/是誰拿炸雞上捷運.normal.json"
+  }
+ ]
+}

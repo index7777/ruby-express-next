@@ -11,13 +11,50 @@
   刻意沒做的部分」原本針對 Phase 9(建系統)寫的,大多數項目在接線這輪
   仍然成立(實際渲染美術素材仍未做),「實際接線」跟「chart 驅動模式」
   這兩條已經不成立,詳見 `game/README.md`。
+- ⚠️ **2026-07-15t 三個使用者實測回報**:
+  1. **墨鏡減速沒有效果**——15s 雖然算出了拉長的 `hitTime`,但畫面渲染
+     `progress` 計算一直拿固定的 `APPROACH_SEC` 當分母,沒有讀彈幕自己的
+     `fallSec`,結果彈幕會在最上方卡住不動一小段時間、再用正常速度掉完
+     最後一段,肉眼完全看不出變慢。已修正:`spawnWave()`/
+     `specialMoveBullets()` 回傳的每顆彈幕都帶 `fallSec`,`BossScene.jsx`
+     塞進畫面陣列時保留這個欄位,渲染時改用 `n.fallSec` 當分母;chart
+     驅動模式原本也沒套用(怕跟歌曲節奏對不上),但確認「只調整音符提早
+     進入下落範圍的時間點,不動 `hitTime`(判定目標不變)」不會造成節奏
+     偏移,這次一併套用。
+  2. **空車票清屏沒有扣 BOSS 血量**——查證過原始碼(1857 行)確認這是
+     正確行為,不是 bug:`clearcard` 在 BOSS 戰只有 `setNotes([])` 清空
+     盤面彈幕 + 音效 + 提示文字,沒有任何傷害邏輯,是純防禦性的「清畫面」
+     恐慌按鈕,不是攻擊技(會讓爆炸彈幕造成傷害的是 `express` 必殺技,
+     兩者刻意不同)。
+  3. **復活後必殺技集氣沒有回滿**——查證過原始碼 `confirmRevive()`
+     (3387 行)確認復活獎勵包含「必殺集氣全滿」,`doRevive()` 之前漏接
+     這個效果,已補上(`itemsRef.current.expressCharge = EXPRESS_NEED`)。
+     另外**確認「重新挑戰」保留道具充能/集氣的行為本來就是對的**——原始碼
+     `retryBoss()` 設 `keepItemsRef.current = true` 讓 `startBoss()` 跳過
+     道具重置,`BossScene.jsx` 的 `doRetry()` 本來就沒有動
+     `itemsRef.current`,跟這個規則一致,不需要修改。
+  4. 新增迴歸測試(`test-boss.mjs` 的 `fallSec` 存在性驗證),累計 330
+     項斷言全綠。
+- ⚠️ **2026-07-15s 補上道具在 BOSS 戰的效果**:使用者發現 `BossScene.jsx`
+  完全沒有道具按鈕,查證後確認這是遺漏(`judge/items.js` 開頭註解本來就
+  寫明「BOSS 戰的道具分支由 BossScene.jsx 自己接」,但這輪只顧著接肉鴿卡,
+  忘記真的把 `ItemManager` 接進這個場景)。已補上:headphone→傷害護盾
+  (`applyHit()` 的 `selfDmgActive` 參數,miss 不自傷)、sunglasses→彈幕
+  減速(`spawnWave()`/`specialMoveBullets()` 的 `slowActive` 參數,
+  `specialMoveBullets()` 之前只有 `spawnWave()` 接了這個參數,這次一併
+  補上)、clearcard→瞬間清空盤面彈幕、express→必殺技(兩階段都能用,
+  每顆爆炸彈幕呼叫一次 `applyHit("perfect")`)。新增 `test-boss.mjs`
+  的 `slowActive` 迴歸測試(60 項斷言)。
 - ⚠️ **2026-07-15k 補充**:新增 `rollExtraChartNote()`(P2/P3 依機率
   0.3/0.5 多插一顆額外音符,對照原始碼 2139 行),`BossScene.jsx` 掛載時
   會 fetch 對應 BOSS 的 `.normal.json` 譜面,拿得到就照譜面時間點生彈幕、
-  拿不到就退回 `spawnWave()` 備援模式——**但 `web-build/assets/` 還沒搬進
-  這個專案,fetch 現在一定會失敗,所以目前實際上永遠走備援模式**,這段
-  程式碼是「準備好了」,要等資產搬進來才有得測。復活流程也已經接上真正的
-  `save/` 系統(見 `save/README.md`),不再是 demo 假值。
+  拿不到就退回 `spawnWave()` 備援模式。復活流程也已經接上真正的 `save/`
+  系統(見 `save/README.md`),不再是 demo 假值。
+- ✅ **2026-07-15q 更新:素材已搬入,chart 驅動模式現在真的能用**——
+  `web-build/assets/` 的 158 個檔案(含 `boss-bgm-<id>.normal.json` 譜面
+  跟對應 mp3)已經搬進 `public/assets/`,`BossScene.jsx` 掛載時的 fetch
+  現在真的抓得到資料,不再永遠 fallback 到備援固定間隔模式,詳見
+  `assets/README.md`。
 
 - `bossManager.js`：`BossManager` 類別,逐字對照原始碼 BOSS 戰核心邏輯
   (`bossApplyHit`/`spawnBossWave`/`signalAttack`/`spitAttack`/`holdAttack`/
@@ -74,12 +111,12 @@
 - ~~實際接線~~:2026-07-15j 已接進 `game/BossScene.jsx`(見上方接線更新),
   這條已經不成立,保留刪除線是方便對照這份文件的演進過程。
 - **BOSS 撞擊/入場演出、彈幕的實際渲染層**(對照原始碼 `ART.bossSignal`
-  等美術素材疊圖)沒有做——`web-build/assets/` 尚未搬入這個專案(見根目錄
-  README「尚未搬入」清單),彈幕/特招目前只回傳「要生在哪個軌道/什麼時間」
-  的純資料,視覺渲染留給接線階段一起做。
-- ~~chart 驅動模式~~:2026-07-15k 已補上(見上方接線更新),但因為
-  `web-build/assets/` 還沒搬進這個專案,實際上永遠會 fetch 失敗、走備援
-  模式,等資產搬進來才需要回來真的驗證這條路徑。
+  等美術素材疊圖)沒有做——素材檔案本體雖然 2026-07-15q 已經搬進
+  `public/assets/`,但 `BossScene.jsx` 的彈幕/BOSS 本體目前還是畫成純色
+  塊,還沒有改成 `<img src={ART.xxx}>` 真的套用這些素材,這是額外一輪
+  視覺套用工程,見 `assets/README.md`「這次刻意沒做的部分」。
+- ~~chart 驅動模式~~:2026-07-15k 已補上(見上方接線更新),2026-07-15q
+  素材搬入後已經真的能 fetch 到資料,不再永遠 fallback。
 - **`holdAttack` 的非 finisher 用法**:原始碼保留了一組非 finisher 文案
   ("這破班誰愛上誰上!長壓接住"),但目前戰鬥中唯一會呼叫 `holdAttack`
   的路徑只有 `triggerBossFinisher`,其他呼叫點已經不存在(公事包已從

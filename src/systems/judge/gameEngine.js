@@ -363,6 +363,12 @@ export function createGameEngine(callbacks = {}) {
     setBuffMissImmuneUntil(t) { state.buffMissImmuneUntil = t; },
     setBuffGoodToPerfectUntil(t) { state.buffGoodToPerfectUntil = t; },
     setBossCombo(v) { state.bossCombo = v; },
+    // 2026-07-15r 新增:給肉鴿卡 priorityseat(每 8 秒回 2 穩定度)這類「不是
+    // 判定觸發、而是計時器觸發」的穩定度變動用——單純重用既有的
+    // `applyStabilityDelta`(套用 `stabFloor` 下限、`penaltyLock` 期間不
+    // 生效等既有規則),不是新邏輯,只是把原本只有內部呼叫得到的行為
+    // 開一個公開入口,不影響任何既有呼叫路徑的行為。
+    addStability(delta, source, nowMs) { return applyStabilityDelta(state, delta, source, nowMs, callbacks); },
     getState() { return state; },
     loadState(s) { state = { ...createInitialJudgeState(), ...s }; },
     reset() { state = createInitialJudgeState(); },

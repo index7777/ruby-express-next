@@ -94,3 +94,47 @@
   一般音符 input，尚未搬對應的 UI/生成邏輯，詳見 `systems/game/README.md`
   跟 `PlayScene.jsx` 內的註解。
 - ⚠️ **完全沒有經過瀏覽器實測**，見頂層 HANDOFF.md 對應章節的待驗證清單。
+
+## 2026-07-15r:新增 `rogue.js`/`items.js`(道具/肉鴿卡)+ `addStability()`
+
+上面「範圍邊界」原本列的「BOSS 傷害/連段遞增留給未來 boss 系統」已經在
+Phase 9 接了(`bossCombo`/`rogueDmgMult`),這輪補上另外兩塊一直沒接的
+「刻意不在這裡做的事」——道具跟肉鴿卡:
+
+- **`rogue.js`**：`recalcRogue(cardIds)` 純函式,逐字對照原始碼
+  `recalcRogue()`(749-770 行)——給一組已選卡 id,從預設中性值重新掃過
+  整個清單算出完整 rogue 狀態(不是遞增修改,每次都從頭算,保證跟
+  `runCards` 清單完全一致)。19 張卡全部實作,包含 `gameEngine.js` 早就
+  預留欄位的(`scoreMult`/`perfMult`/`missMult`/`stabFloor`/`autoPerfect`/
+  `perfWindowMult`/`perfectBonus`/`comboRecover`/`missStabExtra`)跟原本
+  沒欄位、這次新增的(`npcExtra`/`refillCount`/`headphoneDurMult`/
+  `expressMult`/`bossDmgMult`/`noteRateMult`/`regenPhone`/`prioritySeat`)。
+  `rollArrivalCards(ownedIds, count, rand)` 對照「進站三選一」抽卡池
+  邏輯,排除已擁有的卡。
+- **`items.js`**：`ItemManager` 類別,逐字對照原始碼 `useItem()`/
+  `fireExpress()`/`expressBlast()`/`refillRandomItem()`(1840-1980/
+  2440-2500/3140-3170 行)。只做「一般行駛階段」的道具語意(headphone/
+  sunglasses/clearcard 三種充能型 + express 必殺技集氣型),BOSS 戰的
+  道具分支(headphone 變傷害護盾等)由 `BossScene.jsx` 自己讀充能/啟用
+  狀態決定怎麼用,`ItemManager` 本身不寫死場景語意。
+- **`gameEngine.js` 新增 `addStability(delta, source, nowMs)`**:純粹是把
+  既有的內部 `applyStabilityDelta`(套用 `stabFloor`/`penaltyLock` 等既有
+  規則)開一個公開入口,給 `priorityseat` 卡(計時器觸發的穩定度回復,不是
+  判定觸發)這種新情境用,不影響任何既有呼叫路徑的行為,是純新增方法。
+- **接線**:`game/PlayScene.jsx` 完整接了道具(1/2/3/4 鍵 + 畫面按鈕)+
+  抽卡 demo(按鈕模擬「進站三選一」,選卡 `recalcRogue()` 重算後餵給
+  `engine.setRogue()`)+ `npcExtra`(NPC 並存上限)+ `noteRateMult`(機率
+  插額外音符)+ 站務員巡查通過觸發 `refillCount` 次補道具+
+  `regenPhone`/`prioritySeat` 計時器。`game/BossScene.jsx` 也接了自己的
+  抽卡 demo,但目前只有 `bossDmgMult`(finalsprint 卡)真的有作用,因為
+  這個場景是獨立 demo,沒有道具系統跟其他數值效果的呼叫端。
+- 沙箱驗證:`npm run build`(92 modules)+ 既有 9 支測試回歸全過 + 新增
+  `test-items-rogue.mjs`(64 項斷言:19 張卡各自效果/抽卡池排除規則/
+  道具充能狀態機/必殺技集氣公式/計時器效果),累計 326 項斷言全綠。
+- ⚠️ **刻意沒做的部分**(詳見 `game/README.md`):`monthlypass` 卡(一次性
+  補滿道具)是選卡當下的 side effect,不是 `recalcRogue()` 的常駐欄位,
+  呼叫端選到這張卡要另外呼叫 `ItemManager.refillAll()`——這是對照原始碼
+  本來的設計,不是簡化;`punchin` 卡的 `perfMult` 逐字保留了原始碼「設了
+  數值但整個檔案沒有任何地方真的讀取」的死欄位行為,沒有自作主張幫它
+  接上分數效果;`headphone` 在一般行駛階段除了設定 `activeUntil` 外找不到
+  其他明確機制效果,忠實保留這個「看起來沒做什麼」的行為。
