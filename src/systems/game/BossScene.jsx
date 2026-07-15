@@ -31,6 +31,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   LANES, KEY_TO_LANE, WINDOW_GOOD, APPROACH_SEC, FALL_DISTANCE, ITEM_DEFS, EXPRESS_NEED,
   laneLeftExpr, laneWidthExpr, OPP_DIR, vibrate,
+  DEFAULT_LANE_KEYS, DEFAULT_BALANCE_KEYS,
 } from "../config/index.js";
 import { createGameEngine } from "../judge/gameEngine.js";
 import { createItemManager } from "../judge/items.js";
@@ -42,8 +43,9 @@ import {
   ParticleLayer, LightingLayer,
 } from "../particle/index.js";
 import { createBossManager } from "../boss/index.js";
-import { createDefaultRogue, recalcRogue, rollArrivalCards } from "../judge/index.js";
+import { createDefaultRogue, recalcRogue, rollArrivalCards, accRank } from "../judge/index.js";
 import { loadSave, writeSave } from "../save/index.js";
+import { BOSSES, evalRun } from "../data/index.js";
 import { Button, Card, ProgressBar, Dialog } from "../ui/index.js";
 
 const REVIVE_COST = 80; // 對照原始碼 confirmRevive() 的哩程扣點數
@@ -94,6 +96,31 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
   const bossComboRef = useRef(0);
   const heldLanesRef = useRef(new Set());
   const heldDirRef = useRef(null);
+  // laneKeysRef/balanceKeysRef(B1 接線):對照原始碼 3513/3527 行——一律用
+  // `laneKeysRef.current.findIndex()`/`balanceKeysRef.current[dir]` 讀「行控
+  // 中心設定頁存的自訂快捷鍵」,不是寫死的 `KEY_TO_LANE`/"ArrowLeft"/
+  // "ArrowRight"。之前這個場景雖然跟 `SettingsScene.jsx` 一樣讀
+  // `save.settings`,但判定/平衡輸入完全沒接,玩家在設定頁改了鍵,遊戲裡
+  // 還是只認 D/F/J/K/L 跟方向鍵——設定頁看起來像做完了,實際上是假的。
+  // 只在掛載當下讀一次(跟原始碼一樣,遊戲進行中改設定不會立即生效,要
+  // 離開重進才套用,這不是這次要修的行為),驗證規則對照原始碼 1373-1374
+  // 行:`laneKeys` 要是長度 5 的陣列才採用,`balanceKeys` 要四個方向都有值
+  // 才採用,否則 fallback 回預設值,避免存檔格式跟不上時整個判定壞掉。
+  // 這個場景本身只實作了 BOSS 戰簡化版的「左右拉扯」平衡對抗(見上面
+  // `heldDirRef` 只有 "left"/"right" 兩態,沒有完整 4 方向),`forward`/
+  // `backward` 兩個自訂鍵在這個場景本來就沒有對應的輸入意義,維持原本
+  // 範圍邊界不擴大,只讓 left/right 兩個方向真的讀自訂鍵。
+  const laneKeysRef = useRef(DEFAULT_LANE_KEYS.slice());
+  const balanceKeysRef = useRef({ ...DEFAULT_BALANCE_KEYS });
+  const keysLoadedRef = useRef(false);
+  if (!keysLoadedRef.current) {
+    keysLoadedRef.current = true;
+    const s = (loadSave().settings) || {};
+    laneKeysRef.current = (Array.isArray(s.laneKeys) && s.laneKeys.length === 5)
+      ? s.laneKeys.slice() : DEFAULT_LANE_KEYS.slice();
+    balanceKeysRef.current = (s.balanceKeys && s.balanceKeys.forward && s.balanceKeys.backward && s.balanceKeys.left && s.balanceKeys.right)
+      ? { ...s.balanceKeys } : { ...DEFAULT_BALANCE_KEYS };
+  }
   // chart 驅動彈幕模式(2026-07-15k):`chartRef` 是排序過的 { lane, hitTime }
   // 陣列,`chartIdxRef` 是下一個還沒生的音符索引,對照 `PlayScene.jsx` 消耗
   // `buildChart()` 備援節奏的同一種寫法。`chartLoadedRef` 是三態
@@ -106,6 +133,12 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
   const noticeTimerRef = useRef(null);
   const reviveOfferedRef = useRef(false);
   const winHandledRef = useRef(false);
+  // usedItemRef/ultKORef:對照原始碼 `usedItemThisRunRef`/`ultKORef`——
+  // 分別給 `noItemBoss`(不用任何道具擊敗 BOSS)/`ultKO`(用必殺技終結
+  // BOSS)這兩張成就讀,見下面 `activateItem()`/`evalRun()` 呼叫處。
+  const usedItemRef = useRef(false);
+  const ultKORef = useRef(false);
+  const giveUpHandledRef = useRef(false); // 「我要下車」放棄挑戰只結算一次,理由同 winHandledRef
 
   const bossRef = useRef(null);
   if (!bossRef.current) bossRef.current = createBossManager(100);
@@ -189,12 +222,16 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
   // NPC),express 兩個階段都能用,對照原始碼「每顆爆炸的彈幕呼叫一次
   // `bossApplyHit('perfect')`,如果因此把 BOSS 打死會標記『必殺終結』」。
   const activateItem = (key, now) => {
+    usedItemRef.current = true; // 對照原始碼 usedItemThisRunRef,noItemBoss 成就要讀
     if (key === "express") {
       const result = itemsRef.current.fireExpress(now);
       if (!result) { showNotice("必殺技集氣還沒滿"); return; }
       const bullets = bulletsRef.current;
       bulletsRef.current = [];
       for (const bl of bullets) applyBossHit("perfect", bl.lane);
+      // ultKO 成就(用必殺技終結 BOSS):這一波清空之後如果 BOSS 血量正好
+      // 見底,標記這輪擊殺是必殺技終結的,對照原始碼 `ultKORef`。
+      if (bossRef.current.hp <= 0) ultKORef.current = true;
       const { x, y } = laneToPx(2, 0.5);
       emitParticlePreset(particleRef.current, "explosion", x, y);
       showNotice(`⚡ 必殺技!清空 ${bullets.length} 顆彈幕`);
@@ -275,6 +312,15 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
 
   useEffect(() => {
     audio.ensure(0.8);
+    // ⚠️ 新增:接上真正的 BOSS 曲 mp3 播放——對照原始碼 `startBoss()`
+    // (3400-3403/3500 行附近)`bgmElRef.current.loop = true`(BOSS 戰的
+    // BGM 是持續循環,不像一般行駛的站曲/自由曲靠 `onended` 判斷關卡
+    // 結束——BOSS 戰的結束時機是血量歸零,不是歌曲播完)。跟 `PlayScene.jsx`
+    // 同一個缺口:這個場景過去完全沒有呼叫 `AudioManager.playGameBgm()`,
+    // 玩家只聽得到合成鼓聲跟連段音效。`BOSSES` 資料裡每隻王都有自己的
+    // `bgm` 路徑(`data/boss.js`),找不到對應 id 就 fallback 紅線王的曲。
+    const bossDef = BOSSES.find((b) => b.id === bossId);
+    audio.playGameBgm((bossDef && bossDef.bgm) || "assets/boss-bgm-redline.mp3", { loop: true, resetTime: true });
     startPerfRef.current = performance.now();
     lastFrameAtRef.current = startPerfRef.current;
     bulletsRef.current = [];
@@ -368,6 +414,9 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
         const swept = bulletsRef.current;
         bulletsRef.current = [];
         for (const bl of swept) applyBossHit("perfect", bl.lane);
+        // 跟 activateItem("express") 裡的即時清空一樣:掃除視窗期間清死
+        // BOSS 一樣算必殺技終結,ultKO 成就要讀。
+        if (b.hp <= 0) ultKORef.current = true;
       }
 
       // 過期彈幕自動 miss
@@ -434,13 +483,35 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
         // React state——這個 `tick` 函式只在掛載時建立一次,閉包裡的
         // `score` 永遠是初始值 0(跟 `PlayScene.jsx` 修過的 stale closure
         // 是同一個坑)。
-        const liveScore = engineRef.current.getState().score;
+        const st = engineRef.current.getState();
+        const liveScore = st.score;
         const pts = Math.floor(liveScore / 1000) + 50;
         save.points += pts;
         save.stats.bossKills = (save.stats.bossKills || 0) + 1;
+        // ⚠️ 新增:對照原始碼 evalRun()/`endBoss()`——原本這裡只有哩程
+        // 點數/擊殺數,沒有 `save.best.score`/`save.best.maxCombo`(全域
+        // 最佳分數/連段,`RecordsScene.jsx` 一直有在讀)、`stats.plays`、
+        // 成就解鎖、每日任務進度。這幾項 `PlayScene.jsx` 的 `finishSong()`
+        // 剛補過同一組缺口,BOSS 戰這裡也要補一樣的,不然「打贏 BOSS」
+        // 相關的成就(`bossKill`/`noItemBoss`/`ultKO`)/每日任務
+        // (`d_boss1`)永遠不會真的解鎖/推進。
+        save.best.score = Math.max(save.best.score || 0, liveScore);
+        save.best.maxCombo = Math.max(save.best.maxCombo || 0, st.maxCombo);
+        save.stats.plays = (save.stats.plays || 0) + 1;
+        const ar = accRank(st.counts, st.fullComboMiss);
+        const ctx = {
+          counts: st.counts, maxCombo: st.maxCombo, acc: ar.acc, fc: ar.fc, rank: ar.rank,
+          completed: true, bossWin: true, usedItem: usedItemRef.current, ultKO: ultKORef.current,
+          fiveStations: (save.routes.ruby.stationCleared || []).every(Boolean),
+          plays: save.stats.plays,
+        };
+        const { unlocked, completed } = evalRun(save, ctx);
         writeSave(save);
-        showNotice(`🎉 討伐成功 · 哩程 +${pts}`);
-        if (onFinished) onFinished({ ...engineRef.current.getState(), outcome: "win", bossId });
+        const toastLines = [`🎉 討伐成功 · 哩程 +${pts}`];
+        for (const a of unlocked) toastLines.push(`🏅 成就解鎖:${a.name}`);
+        for (const d of completed) toastLines.push(`✅ 每日達成:${d.label}`);
+        showNotice(toastLines.join("\n"), 2600);
+        if (onFinished) onFinished({ ...st, outcome: "win", bossId });
       }
 
       const camState = camera.getState(now);
@@ -467,8 +538,11 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
     const onKeyDown = (e) => {
       const itemKey = ITEM_KEY_MAP[e.key];
       if (itemKey) { activateItem(itemKey, performance.now()); return; }
-      const laneIdx = KEY_TO_LANE[e.key.toLowerCase()];
-      if (laneIdx !== undefined) {
+      // B1 接線:讀 laneKeysRef(行控中心設定頁存的自訂快捷鍵),不是寫死
+      // 的 KEY_TO_LANE,對照原始碼 3513 行 `laneKeysRef.current.findIndex()`。
+      const k = e.key.toLowerCase();
+      const laneIdx = laneKeysRef.current.findIndex((lk) => (lk || "").toLowerCase() === k);
+      if (laneIdx !== -1) {
         heldLanesRef.current.add(laneIdx);
         if (!bossRef.current.hold && !bossRef.current.gate && !bossRef.current.outcome) {
           const now = performance.now();
@@ -479,14 +553,18 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
           });
         }
       }
-      if (e.key === "ArrowLeft") heldDirRef.current = "left";
-      else if (e.key === "ArrowRight") heldDirRef.current = "right";
+      // B1 接線:左右拉扯方向鍵同樣讀自訂 balanceKeys.left/right(這個場景
+      // 只實作簡化版左右兩態,forward/backward 沒有對應輸入意義,見上面
+      // `balanceKeysRef` 初始化處的註解)。
+      if (e.key === balanceKeysRef.current.left) heldDirRef.current = "left";
+      else if (e.key === balanceKeysRef.current.right) heldDirRef.current = "right";
     };
     const onKeyUp = (e) => {
-      const laneIdx = KEY_TO_LANE[e.key.toLowerCase()];
-      if (laneIdx !== undefined) heldLanesRef.current.delete(laneIdx);
-      if (e.key === "ArrowLeft" && heldDirRef.current === "left") heldDirRef.current = null;
-      if (e.key === "ArrowRight" && heldDirRef.current === "right") heldDirRef.current = null;
+      const k = e.key.toLowerCase();
+      const laneIdx = laneKeysRef.current.findIndex((lk) => (lk || "").toLowerCase() === k);
+      if (laneIdx !== -1) heldLanesRef.current.delete(laneIdx);
+      if (e.key === balanceKeysRef.current.left && heldDirRef.current === "left") heldDirRef.current = null;
+      if (e.key === balanceKeysRef.current.right && heldDirRef.current === "right") heldDirRef.current = null;
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
@@ -496,6 +574,7 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
       clearTimeout(noticeTimerRef.current);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      audio.stopGameBgm(); // 離開這個場景要停掉遊戲頻道,避免下一個場景疊音樂
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -548,8 +627,46 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
     // 必殺技集氣也跟 BOSS/分數/連段一樣真的回到初始狀態,呼應這個場景本來
     // 就選的「不做跨站道具延續」簡化決定。
     itemsRef.current.reset();
+    // 同一輪重來,noItemBoss/ultKO 這兩張成就的追蹤旗標也要跟著歸零,不然
+    // 上一輪死掉前用過的道具/必殺技會冤枉這一輪重新挑戰的成就判定。
+    usedItemRef.current = false;
+    ultKORef.current = false;
+    giveUpHandledRef.current = false;
     setOutcome(null); setReviveAsk(false); setScore(0);
     setBossHp(100); setPlayerHp(100); setPhase(1);
+  };
+
+  // doGiveUp:「我要下車」放棄挑戰——對照原始碼 `doFailBoss()`(即使沒有
+  // 討伐成功,也要跟贏了一樣結算 stats.plays/成就解鎖/每日任務進度,原始碼
+  // `evalRun({bossWin:false})` 就是即使輸了也照樣呼叫,`commuter`(累積遊玩
+  // 20 場)這類跟輸贏無關的成就跟 `d_play3`/`d_acc90`/`d_combo50`/`d_nomiss`
+  // 這些每日任務都可能在輸的這一場被推進)。原本這個按鈕是直接 inline 呼叫
+  // `onFinished`,完全没有寫存檔,這裡補上跟贏的路徑同一套收尾邏輯。
+  const doGiveUp = () => {
+    if (!giveUpHandledRef.current) {
+      giveUpHandledRef.current = true;
+      const save = loadSave();
+      const st = engineRef.current.getState();
+      const liveScore = st.score;
+      save.best.score = Math.max(save.best.score || 0, liveScore);
+      save.best.maxCombo = Math.max(save.best.maxCombo || 0, st.maxCombo);
+      save.stats.plays = (save.stats.plays || 0) + 1;
+      const ar = accRank(st.counts, st.fullComboMiss);
+      const ctx = {
+        counts: st.counts, maxCombo: st.maxCombo, acc: ar.acc, fc: ar.fc, rank: ar.rank,
+        completed: true, bossWin: false, usedItem: usedItemRef.current, ultKO: false,
+        fiveStations: (save.routes.ruby.stationCleared || []).every(Boolean),
+        plays: save.stats.plays,
+      };
+      const { unlocked, completed } = evalRun(save, ctx);
+      writeSave(save);
+      const toastLines = [];
+      for (const a of unlocked) toastLines.push(`🏅 成就解鎖:${a.name}`);
+      for (const d of completed) toastLines.push(`✅ 每日達成:${d.label}`);
+      if (toastLines.length) showNotice(toastLines.join("\n"), 2400);
+    }
+    if (onFinished) onFinished({ ...engineRef.current.getState(), outcome: "lose", bossId });
+    else onExit();
   };
 
   // 肉鴿卡(demo)——這個場景只有 finalsprint(終點衝刺:BOSS 傷害 +30%)
@@ -672,7 +789,7 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
               <div style={{ fontSize: 16, fontWeight: 900, color: "#FFD700" }}>
                 💼 {viewRef.current.holdUi.isFinisher ? "最後一擊!長壓接住公事包!" : "長壓接住!"}
               </div>
-              <div style={{ fontSize: 12, opacity: 0.8 }}>按住 {LANES[viewRef.current.holdUi.lane]?.keyChar} 鍵</div>
+              <div style={{ fontSize: 12, opacity: 0.8 }}>按住 {(laneKeysRef.current[viewRef.current.holdUi.lane] || LANES[viewRef.current.holdUi.lane]?.keyChar || "").toUpperCase()} 鍵</div>
               <div style={{ width: 200 }}>
                 <ProgressBar value={viewRef.current.holdUi.held / viewRef.current.holdUi.need} color="#FFD700" />
               </div>
@@ -696,7 +813,10 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
         </div>
 
         <div style={{ display: "flex", justifyContent: "space-around", marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-          {LANES.map((lane) => (<div key={lane.key}>{lane.keyChar} · {lane.label}</div>))}
+          {/* B1 接線:提示文字也改讀自訂鍵(laneKeysRef),不是永遠顯示預設
+              D/F/J/K/L——不然玩家在設定頁改了鍵,畫面提示卻對不上實際判定
+              會吃哪個鍵,反而更容易搞混。 */}
+          {LANES.map((lane, i) => (<div key={lane.key}>{(laneKeysRef.current[i] || lane.keyChar).toUpperCase()} · {lane.label}</div>))}
         </div>
       </div>
 
@@ -704,7 +824,7 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
         <>
           <Button variant="primary" onClick={doRevive}>復活接關(demo)</Button>
           <Button variant="secondary" onClick={doRetry}>重新挑戰</Button>
-          <Button variant="ghost" onClick={() => (onFinished ? onFinished({ ...engineRef.current.getState(), outcome: "lose", bossId }) : onExit())}>我要下車</Button>
+          <Button variant="ghost" onClick={doGiveUp}>我要下車</Button>
         </>
       }>
         <div style={{ fontSize: 13, color: "#C0C8D0", textAlign: "left", width: "100%" }}>

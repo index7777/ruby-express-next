@@ -17,8 +17,9 @@
 // - 沒有雙軌行李箱音符/炸彈/雜訊/BOSS 分支/NPC/道具/肉鴿卡/平衡對抗——
 //   這些 judgeCore 內部邏輯都已經寫好,只是這個場景沒有餵對應的資料/UI,
 //   之後真的要做 Phase 8(完整遊戲畫面)接線時才會逐一補上。
-// - 按鍵固定用 config 的 `KEY_TO_LANE`(D/F/J/K/L),沒有讀存檔的自訂
-//   `laneKeys`(那是行控中心設定頁的功能,不在這次接線範圍內)。
+// - 按鍵原本固定用 config 的 `KEY_TO_LANE`(D/F/J/K/L),沒有讀存檔的自訂
+//   `laneKeys`;2026-07-16 已補上接線(見 `laneKeysRef` 相關程式碼),
+//   掛載時改讀 `save.settings.laneKeys`,格式不對才 fallback 回預設值。
 // - 每幀下落位置/彈幕/NPC 清單改成寫進 `viewRef`(一個普通物件,不是 React
 //   state)+ 每幀只呼叫一次 `setRenderTick()` 強制重繪一次,渲染時直接讀
 //   `viewRef.current.xxx`——跟 `ParticleLayer.jsx`/`LightingLayer.jsx`/
@@ -42,8 +43,9 @@ import { useEffect, useRef, useState } from "react";
 import {
   LANES, KEY_TO_LANE, WINDOW_GOOD, APPROACH_SEC, FALL_DISTANCE,
   laneLeftExpr, laneWidthExpr, JUDGE_LABEL, ITEM_DEFS, vibrate,
+  DEFAULT_LANE_KEYS,
 } from "../config/index.js";
-import { buildChart } from "../judge/index.js";
+import { buildChart, accRank } from "../judge/index.js";
 import { createGameEngine } from "../judge/gameEngine.js";
 import {
   createItemManager, expressBlastResult,
@@ -58,6 +60,7 @@ import {
 } from "../particle/index.js";
 import { createNpcManager } from "../npc/index.js";
 import { loadSave, writeSave } from "../save/index.js";
+import { evalRun } from "../data/index.js";
 import { Button, Card, Dialog, ProgressBar } from "../ui/index.js";
 
 const CHART_CYCLES = 6; // 16 步/cycle * BEAT_SEC(0.6s) ≈ 9.6 秒/cycle,約 1 分鐘的備援節奏
@@ -115,6 +118,26 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
   const endedRef = useRef(false); // 對照 `ended` state,但給 tick() 內部讀(避免 stale closure),播完後徹底停掉 tick 迴圈用
   const comboRef = useRef(0); // 鏡像 `combo` state,給 engine callback(閉包只建立一次)讀即時值用,理由同其他「讀 ref 不讀 state」的修正
   const noticeTimerRef = useRef(null);
+  // usedItemRef:對照原始碼 `usedItemThisRunRef`——這一輪(這首歌/這站)有
+  // 沒有用過任何道具/必殺技,`evalRun()` 的 `noItemBoss` 成就要讀(雖然那張
+  // 只在 BOSS 戰有意義,這裡先跟 BossScene.jsx 用同樣的欄位名稱/語意保持
+  // 一致,免得以後要共用 ctx 組裝邏輯時又要對照一次)。
+  const usedItemRef = useRef(false);
+  // laneKeysRef(B1 接線):對照原始碼 3513 行 `laneKeysRef.current.
+  // findIndex()`——一般行駛階段的軌道判定要讀「行控中心設定頁存的自訂
+  // 快捷鍵」(`save.settings.laneKeys`),不是寫死的 `KEY_TO_LANE`
+  // (D/F/J/K/L)。之前 `SettingsScene.jsx` 雖然已經把改好的鍵存進存檔,
+  // 但這個畫面從來沒有真的讀回來用,玩家在設定頁重新綁定的鍵完全沒有
+  // 效果。只在掛載當下讀一次(跟原始碼一樣,對照 1373 行的驗證規則:
+  // 陣列長度要剛好 5 才採用,否則 fallback 回預設值)。
+  const laneKeysRef = useRef(DEFAULT_LANE_KEYS.slice());
+  const laneKeysLoadedRef = useRef(false);
+  if (!laneKeysLoadedRef.current) {
+    laneKeysLoadedRef.current = true;
+    const s = (loadSave().settings) || {};
+    laneKeysRef.current = (Array.isArray(s.laneKeys) && s.laneKeys.length === 5)
+      ? s.laneKeys.slice() : DEFAULT_LANE_KEYS.slice();
+  }
 
   const particleRef = useRef(null);
   if (!particleRef.current) particleRef.current = createParticleManager();
@@ -139,6 +162,7 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
   // headphone=護盾/sunglasses=彈幕減速/clearcard=清彈幕由 `BossScene.jsx`
   // 自己接,不是這裡)。1/2/3/4 鍵跟畫面按鈕共用同一個函式。
   const activateItem = (key, now) => {
+    usedItemRef.current = true;
     if (key === "express") {
       const result = itemsRef.current.fireExpress(now);
       if (!result) { showNotice("必殺技集氣還沒滿"); return; }
@@ -300,6 +324,88 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
     engineRef.current.setRogue(rogueRef.current);
   }
 
+  // ⚠️ 新增:finishSong() ——對照原始碼 `endGame()`(3140-3166 行)。原本
+  // 這段「歌播完了」的收尾只有 stationCleared/stationBest 兩個欄位(見下面
+  // 的存檔區塊),完全沒有：
+  //   1. 哩程點數(`save.points`)——原始碼公式是通勤 `floor(sc/1000 *
+  //      max(1,已通關站數))`、自由模式 `floor(sc/1000*1.15)`,首次通關該站
+  //      額外 +30(用 `pointsClaimed[]` 只給一次)。
+  //   2. 全域最佳分數/連段(`save.best.score`/`save.best.maxCombo`)——
+  //      `RecordsScene.jsx` 一直都有在讀這兩個欄位顯示,但從來沒有人寫過。
+  //   3. 里程統計(`save.stats.mileage`)。
+  //   4. 成就解鎖 + 每日任務進度(`data/achievements.js` 的 `evalRun()`,
+  //      這次才補的函式——`ACHIEVEMENTS`/`DAILY_POOL`/`rollDaily()` 這些
+  //      「資料」跟讀取端 UI(`RecordsScene.jsx`/`HubScene.jsx`)其實老早
+  //      就有了,只是沒有任何地方真的呼叫檢查/寫入,成就永遠鎖住、每日
+  //      任務永遠 0 進度)。
+  // 這些全部補進這個函式,跟原本「播完了沒」的判斷(chart 耗盡)+ 這次
+  // 新增的「BGM 播放完畢」(`audio.playGameBgm` 的 `onEnded`)兩條觸發路徑
+  // 共用同一份收尾邏輯,用 `endedRef`/`resultSavedRef` 防止重複觸發。
+  const finishSong = () => {
+    if (endedRef.current) return; // chart 耗盡 vs BGM onended 兩條觸發路徑防重複
+    endedRef.current = true;
+    setEnded(true);
+    if (resultSavedRef.current) return; // 已經寫過存檔了(理論上跟上面同時成立,雙保險)
+    resultSavedRef.current = true;
+
+    const st = engineRef.current.getState();
+    const ar = accRank(st.counts, st.fullComboMiss);
+    const sc = st.score;
+    const commute = stationIndex != null;
+    const save = loadSave();
+
+    if (commute) {
+      // 2026-07-15p 修正過的鏡像欄位寫法(見下方註解沿用):真正該寫的是
+      // `save.slots[activeSlot].ruby`,`save.routes.ruby` 只是唯讀鏡像。
+      const slotRuby = save.slots[save.activeSlot].ruby;
+      slotRuby.stationCleared[stationIndex] = true;
+      slotRuby.stationBest[stationIndex] = Math.max(slotRuby.stationBest[stationIndex] || 0, sc);
+      // 哩程點數(通勤公式):對照原始碼 `floor(sc/1000 * max(1,已通關站數))`
+      // + 首次通關這一站額外 +30(`pointsClaimed[]` 保證只給一次)。
+      const cleared = slotRuby.stationCleared.filter(Boolean).length;
+      let pts = Math.floor((sc / 1000) * Math.max(1, cleared));
+      if (!Array.isArray(slotRuby.pointsClaimed) || slotRuby.pointsClaimed.length !== 5) {
+        slotRuby.pointsClaimed = [false, false, false, false, false];
+      }
+      if (!slotRuby.pointsClaimed[stationIndex]) {
+        pts += 30;
+        slotRuby.pointsClaimed[stationIndex] = true;
+      }
+      save.points = (save.points || 0) + pts;
+      save.routes.ruby = JSON.parse(JSON.stringify(slotRuby)); // 同步鏡像欄位
+    } else {
+      // 自由模式:對照原始碼 `floor(sc/1000*1.15)`,沒有站別/首次通關獎勵。
+      const pts = Math.floor((sc / 1000) * 1.15);
+      save.points = (save.points || 0) + pts;
+    }
+
+    // 以下這幾項不分通勤/自由模式,對照原始碼 `endGame()` 是同一個
+    // `persist()` 呼叫裡一起做的,不受 `commute` 分支影響。
+    save.best.score = Math.max(save.best.score || 0, sc);
+    save.best.maxCombo = Math.max(save.best.maxCombo || 0, st.maxCombo);
+    save.stats.plays = (save.stats.plays || 0) + 1;
+    save.stats.mileage = (save.stats.mileage || 0) + Math.floor(sc / 100);
+
+    // 成就解鎖 + 每日任務進度(這次新補的 evalRun(),見上方註解)。
+    const fiveStations = commute
+      ? save.slots[save.activeSlot].ruby.stationCleared.every(Boolean)
+      : (save.slots[save.activeSlot].ruby.stationCleared || []).every(Boolean);
+    const ctx = {
+      counts: st.counts, maxCombo: st.maxCombo, acc: ar.acc, fc: ar.fc, rank: ar.rank,
+      completed: true, bossWin: false, usedItem: usedItemRef.current, ultKO: false,
+      fiveStations, plays: save.stats.plays,
+    };
+    const { unlocked, completed } = evalRun(save, ctx);
+    writeSave(save);
+
+    const toastLines = [];
+    for (const a of unlocked) toastLines.push(`🏅 成就解鎖:${a.name}`);
+    for (const d of completed) toastLines.push(`✅ 每日達成:${d.label}`);
+    if (toastLines.length) showNotice(toastLines.join("\n"), 2400);
+
+    if (onFinished) onFinished({ ...st, stationIndex, gameMode });
+  };
+
   // 2026-07-15l 接線:有給 `track.chart` 就嘗試載入真正的譜面,拿到後
   // 換掉正在播的備援節奏(對照 `BossScene.jsx` 的 chart 驅動模式同一套
   // 「先備援墊著,拿到真資料再換」寫法)。沒給 `track` 或 fetch 失敗
@@ -324,6 +430,53 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
 
   useEffect(() => {
     audio.ensure(0.8);
+    // ⚠️ 新增:接上真正的站曲/自由曲 mp3 播放——對照原始碼
+    // `startCommuteStage()`/`startFreeSong()` 把 `bgmElRef.current.src =
+    // at.file` 之後設 `loop=false`、`onended=()=>endGame()`。這是這次才
+    // 發現的缺口:這個場景過去只呼叫 `audio.ensure(0.8)` 讓合成音效的
+    // AudioContext 就緒,`AudioManager.playGameBgm()` 這個方法從 Phase 2
+    // 就寫好了卻從來沒有任何呼叫端用過,玩家只聽得到打擊鼓聲跟連段音效,
+    // 聽不到歌曲 mp3 本體。`onEnded` 直接接 `finishSong()`——對照原始碼
+    // 「歌曲播放結束」才是真正的關卡結束觸發點,不是「chart 音符排完」這個
+    // port 原本唯一的判斷式(見下面 tick() 內的註解,兩者現在互為保險,
+    // 共用同一個收尾函式,`endedRef` 防止重複觸發)。沒有 `track.file`
+    // (例如舊呼叫端/測試情境完全沒傳 `track`)就不播放,沿用原本純備援
+    // 節奏、只靠 chart 耗盡判斷收尾的行為。
+    if (track?.file) {
+      audio.playGameBgm(track.file, { loop: false, resetTime: true, onEnded: () => finishSong() });
+    }
+    // ⚠️ 新增:自動販賣機預購項目消費——對照原始碼 `startGame()`
+    // (index.html 2846-2894 行,通勤 `enterGame()`/自由模式共用同一顆
+    // 函式)裡「開場注入 + 清旗標」那段(2873-2887 行)。這是這次才發現的
+    // 缺口:`VendingScene.jsx` 買了「加購月票」/「常客優惠」之後,只有把
+    // `save.preorder.monthlypass`/`.loyalty` 寫成 true,整個專案沒有任何
+    // 地方真的去讀這兩個旗標讓它生效——玩家花點數買了預購,下一場開局
+    // 完全沒感覺。⚠️ 對照原始碼確認過:這段消費邏輯在 `startGame()` 裡是
+    // **無條件**執行的,不管這次開局是通勤站(`enterGame()` 從
+    // `startCommuteStage()` 呼叫)還是自由/練習模式(`enterGame()` 從
+    // 選歌/練習按鈕呼叫)都會吃,不是通勤限定——所以這裡刻意不用
+    // `stationIndex != null` 當條件,任何一次 `PlayScene` 掛載(下一場遊戲)
+    // 都消費,消費完照原始碼清空兩個旗標,不會下一場又重複觸發。
+    {
+      const sv0 = loadSave();
+      if (sv0.preorder && (sv0.preorder.monthlypass || sv0.preorder.loyalty)) {
+        const msgs = [];
+        if (sv0.preorder.monthlypass) {
+          itemsRef.current.refillAll();
+          msgs.push("已使用預購「加購月票」· 道具滿格");
+        }
+        if (sv0.preorder.loyalty) {
+          // 常客優惠 = 進站補給多一種:對照原始碼直接加進 rogue 效果的
+          // `refillCount`(這個場景讀 `rogueRef.current.refillCount` 決定
+          // NPC 站務員巡查補幾次道具,見上面 `refillCount` 相關註解)。
+          rogueRef.current.refillCount = (rogueRef.current.refillCount || 1) + 1;
+          msgs.push(msgs.length ? "常客優惠" : "已使用預購「常客優惠」");
+        }
+        sv0.preorder = { monthlypass: false, loyalty: false };
+        writeSave(sv0);
+        showNotice(msgs.join(" · "), 1800);
+      }
+    }
     chartRef.current = buildChart(CHART_CYCLES);
     nextIdxRef.current = 0;
     notesRef.current = [];
@@ -481,41 +634,17 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
       // 「播完了沒」只看備援譜面本身的音符還有沒有沒打到的(`kind !==
       // "double"` 排除掉 NPC 占位行李客塞進 `notesRef` 的雙軌音符)——
       // NPC 系統是獨立於「這首歌播完沒」之外的東西,不該讓它們一直生新
-      // 音符就導致「播完」這個條件永遠不成立。
+      // 音符就導致「播完」這個條件永遠不成立。這是 chart 本身耗盡的判斷,
+      // 跟下面 mount effect 新接的「BGM 播放完畢」(`onEnded`)是兩條互相
+      // 獨立、但共用同一個 `finishSong()` 收尾函式的觸發路徑——沒有真正
+      // 歌曲檔案(`track.file` 沒給,或 fetch 失敗只剩備援節奏)時,靠這條
+      // chart 判斷式收尾;有真正歌曲檔案時,理論上 BGM 播完的時間點會先到
+      // (chart 音符落點本來就對齊歌曲長度,音符判定窗跑完後歌曲還會再播
+      // 一段尾奏才真的 `ended`),兩條都留著互為保險,`finishSong()` 內部
+      // 用 `endedRef` 防止重複觸發。
       const realNotesRemaining = notesRef.current.some((n) => n.kind !== "double");
       if (nextIdxRef.current >= chart.length && !realNotesRemaining) {
-        endedRef.current = true;
-        setEnded(true);
-        // 2026-07-15l 接線:通勤模式(有傳 stationIndex)結束時真的寫存檔
-        // ——過關 + 更新最佳分數,對照原始碼「單站跑完更新 stationCleared/
-        // stationBest」的行為(但這裡沒有做完整的結算/評級畫面,只做
-        // 存檔這一步)。讀 engine 內部即時 score(同一份物件參照,不是
-        // 閉包裡的 `score` React state,理由同 BossScene.jsx 的 liveScore
-        // 修正)。
-        //
-        // ⚠️ 2026-07-15p 修正:原本只改了 `save.routes.ruby`,但
-        // `loadSave()` 既有的合併邏輯(Phase 1 逐字搬過來的,#3 存檔格
-        // 機制)只要 `save.slots` 陣列存在(第一次 `writeSave()` 之後就會
-        // 存在,因為 `defaultSave()` 本來就帶了 3 個空存檔格),`routes.
-        // ruby` 就一律被視為「使用中存檔格」(`slots[activeSlot].ruby`)
-        // 的唯讀鏡像,下次 `loadSave()` 會直接拿 `slots[activeSlot].ruby`
-        // 蓋掉 `routes.ruby`——只改 `routes.ruby` 這個鏡像欄位,下次讀檔
-        // 就會被真正的存檔格資料蓋回去,等於白寫。真正該寫的是
-        // `save.slots[save.activeSlot].ruby`,這裡兩個都更新(鏡像欄位
-        // 也同步更新,避免同一次 render 裡有地方直接讀 `routes.ruby` 拿到
-        // 舊值)。
-        if (stationIndex != null && !resultSavedRef.current) {
-          resultSavedRef.current = true;
-          const liveScore = engineRef.current.getState().score;
-          const save = loadSave();
-          const slotRuby = save.slots[save.activeSlot].ruby;
-          slotRuby.stationCleared[stationIndex] = true;
-          slotRuby.stationBest[stationIndex] = Math.max(slotRuby.stationBest[stationIndex] || 0, liveScore);
-          save.routes.ruby = JSON.parse(JSON.stringify(slotRuby)); // 同步鏡像欄位
-          save.stats.plays = (save.stats.plays || 0) + 1;
-          writeSave(save);
-        }
-        if (onFinished) onFinished({ ...engineRef.current.getState(), stationIndex, gameMode });
+        finishSong();
         return; // 不再排下一幀,徹底停掉 tick 迴圈
       }
       rafRef.current = requestAnimationFrame(tick);
@@ -525,8 +654,11 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
     const onKeyDown = (e) => {
       const itemKey = ITEM_KEY_MAP[e.key];
       if (itemKey) { activateItem(itemKey, performance.now()); return; }
-      const laneIdx = KEY_TO_LANE[e.key.toLowerCase()];
-      if (laneIdx === undefined) return;
+      // B1 接線:讀 laneKeysRef(行控中心設定頁存的自訂快捷鍵),不是寫死
+      // 的 KEY_TO_LANE,對照原始碼 3513 行 `laneKeysRef.current.findIndex()`。
+      const k = e.key.toLowerCase();
+      const laneIdx = laneKeysRef.current.findIndex((lk) => (lk || "").toLowerCase() === k);
+      if (laneIdx === -1) return;
       const now = performance.now();
       const t = (now - startPerfRef.current) / 1000;
       engineRef.current.hit({
@@ -539,6 +671,7 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
     return () => {
       cancelAnimationFrame(rafRef.current);
       window.removeEventListener("keydown", onKeyDown);
+      audio.stopGameBgm(); // 離開這個場景(離開/切歌/卸載)要停掉遊戲頻道,避免下一個場景疊音樂
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -666,8 +799,10 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
         </div>
 
         <div style={{ display: "flex", justifyContent: "space-around", marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-          {LANES.map((lane) => (
-            <div key={lane.key}>{lane.keyChar} · {lane.label}</div>
+          {/* B1 接線:提示文字也改讀自訂鍵(laneKeysRef),不然玩家在設定頁
+              改了鍵,畫面提示卻對不上實際判定會吃哪個鍵,反而更容易搞混。 */}
+          {LANES.map((lane, i) => (
+            <div key={lane.key}>{(laneKeysRef.current[i] || lane.keyChar).toUpperCase()} · {lane.label}</div>
           ))}
         </div>
 
