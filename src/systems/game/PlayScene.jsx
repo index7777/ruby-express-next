@@ -5,8 +5,15 @@
 // combo 特效與鏡頭震動,而不是只看 node 測試的斷言數字。
 //
 // ⚠️ 刻意的範圍邊界(不是完整移植 web-build/index.html 的遊戲畫面):
-// - 只餵「一般音符」判定路徑(judgeCore 的第 6 段分支),使用
-//   `judge/scoring.js` 的 `buildChart()` 備援固定節奏(5 軌、BASE_BPM=100)。
+// - 只餵「一般音符」判定路徑(judgeCore 的第 6 段分支)。**2026-07-15l
+//   接線**:可選傳入 `track`(`{name,file,chart}`,對照 `data/songs.js`
+//   的 `REDLINE_TRACKS`/`DEFAULT_TRACKS` 形狀),掛載後會先照樣播
+//   `judge/scoring.js` 的 `buildChart()` 備援固定節奏(不會卡在等 fetch),
+//   如果 `track.chart` 有給值就同時嘗試 fetch 真正的譜面 JSON,拿到後
+//   把備援節奏換成真正的譜面(跟 `BossScene.jsx` chart 驅動模式一樣的
+//   「先用備援墊著,拿到真資料再換上」寫法)。**`web-build/assets/` 還沒
+//   搬進這個專案,fetch 目前一定會失敗**,所以沒傳 `track` 或素材沒搬進來
+//   之前,實際上永遠是備援節奏。
 // - 沒有雙軌行李箱音符/炸彈/雜訊/BOSS 分支/NPC/道具/肉鴿卡/平衡對抗——
 //   這些 judgeCore 內部邏輯都已經寫好,只是這個場景沒有餵對應的資料/UI,
 //   之後真的要做 Phase 8(完整遊戲畫面)接線時才會逐一補上。
@@ -46,6 +53,7 @@ import {
   ParticleLayer, LightingLayer,
 } from "../particle/index.js";
 import { createNpcManager } from "../npc/index.js";
+import { loadSave, writeSave } from "../save/index.js";
 import { Button, ProgressBar } from "../ui/index.js";
 
 const CHART_CYCLES = 6; // 16 步/cycle * BEAT_SEC(0.6s) ≈ 9.6 秒/cycle,約 1 分鐘的備援節奏
@@ -61,7 +69,7 @@ function laneCenterPercent(lane) {
 // (雙軌/炸彈/雜訊專用,這個場景不會出現)一律 fallback 成 "glow"。
 const LABEL_TO_FX = { PERFECT: "perfect", GREAT: "great", GOOD: "good", MISS: "miss" };
 
-export default function PlayScene({ audio, fx, shake, camera, onExit }) {
+export default function PlayScene({ audio, fx, shake, camera, onExit, track, stationIndex }) {
   const [score, setScore] = useState(0);
   const [combo, setCombo] = useState(0);
   const [maxCombo, setMaxCombo] = useState(0);
@@ -85,6 +93,8 @@ export default function PlayScene({ audio, fx, shake, camera, onExit }) {
   const fieldBoxRef = useRef(null);
   const streaksRef = useRef({ perfect: 0, greatPlus: 0 });
   const npcRollAtRef = useRef(0);
+  const resultSavedRef = useRef(false); // 通勤模式(有傳 stationIndex)結束時只寫存檔一次
+  const endedRef = useRef(false); // 對照 `ended` state,但給 tick() 內部讀(避免 stale closure),播完後徹底停掉 tick 迴圈用
 
   const particleRef = useRef(null);
   if (!particleRef.current) particleRef.current = createParticleManager();
@@ -145,8 +155,30 @@ export default function PlayScene({ audio, fx, shake, camera, onExit }) {
       onPlayComboFanfare: () => audio.playComboFanfare(),
       onVibrate: (pattern) => vibrate(pattern),
       onComboMilestoneFx: (tier) => {
-        shake.trigger(6 + tier / 15, 260);
-        applyCameraPreset(camera, "comboMilestone", tier);
+        // ⚠️ 2026-07-15o 修正:`shake.trigger()` 的 `now` 參數同樣要明確
+        // 傳 `performance.now()`,理由跟下面 camera 那行完全一樣——沒傳的
+        // 話預設 `Date.now()`,跟 tick 迴圈呼叫 `shake.getOffset(now)` 用
+        // 的 `performance.now()` 時鐘基準對不上,`isActive()` 會永遠判定
+        // 為 true(小數字 performance.now() 幾乎必定小於 Date.now() 那個
+        // 巨大時間戳 + 300ms),導致震動「一觸發就再也不會停」,`decay`
+        // 公式因為時間差是天文數字大的負值而算出天文數字大的位移量,畫面
+        // 被推到螢幕外(看起來像全黑看不到音符),而且因為 `isActive`
+        // 永遠是 true,這個位移量每幀都用 `now` 重新算一次偽隨機值,
+        // 才會有「一直抖動」的感覺——這才是「combo 50 一觸發畫面就黑掉、
+        // 一直抖」的真正根因,比之前修的炸彈碰撞時機問題更嚴重、影響更
+        // 持久(一旦觸發就不會恢復,不像穩定度掉到 0 至少 2 秒後会恢復)。
+        shake.trigger(6 + tier / 15, 260, performance.now());
+        // ⚠️ 2026-07-15o 修正:一定要明確傳入 `performance.now()`——
+        // `CAMERA_PRESETS.comboMilestone` 的 `now` 參數預設是
+        // `Date.now()`(Unix epoch 毫秒,一個 10+ 位數的巨大數字),但這個
+        // 場景的 tick 迴圈全程都是用 `performance.now()`(從頁面載入起算
+        // 的毫秒數,數字小很多)呼叫 `camera.getState(now)` 讀值——兩個
+        // 時鐘基準不一樣,punchZoom 存的 `startAt` 是用 `Date.now()`,
+        // 之後 `getZoom(performance.now())` 算「經過多久」時兩者相減會
+        // 是一個天文數字大的負值,衰減公式算出來的 zoom 也會是天文數字,
+        // 畫面整個被縮放到只剩一片單色(玩家看到的「combo 50 一觸發畫面
+        // 就黑掉、音符消失」),不是真的黑幕特效,是這個時鐘沒對齊的 bug。
+        applyCameraPreset(camera, "comboMilestone", tier, performance.now());
         // Phase 7 接線:combo 里程碑同時觸發碎屑噴發 + 金色光暈,呼應
         // `particle/presets.js`/`lighting.js` 註解寫的「三個系統同一時機
         // 一起觸發」設計。
@@ -165,6 +197,28 @@ export default function PlayScene({ audio, fx, shake, camera, onExit }) {
     });
   }
 
+  // 2026-07-15l 接線:有給 `track.chart` 就嘗試載入真正的譜面,拿到後
+  // 換掉正在播的備援節奏(對照 `BossScene.jsx` 的 chart 驅動模式同一套
+  // 「先備援墊著,拿到真資料再換」寫法)。沒給 `track` 或 fetch 失敗
+  // (目前一定會失敗,見檔案開頭註解)就什麼都不做,繼續用備援節奏。
+  useEffect(() => {
+    if (!track?.chart) return;
+    let cancelled = false;
+    fetch(track.chart)
+      .then((r) => { if (!r.ok) throw new Error("no chart"); return r.json(); })
+      .then((data) => {
+        if (cancelled) return;
+        const notes = Array.isArray(data?.notes)
+          ? data.notes.map((n, i) => ({ id: `chart-${i}`, lane: n.lane, hitTime: n.time }))
+          : [];
+        if (notes.length === 0) return;
+        chartRef.current = notes;
+        nextIdxRef.current = 0;
+      })
+      .catch(() => { /* 拿不到就維持備援節奏,不用特別處理 */ });
+    return () => { cancelled = true; };
+  }, [track]);
+
   useEffect(() => {
     audio.ensure(0.8);
     chartRef.current = buildChart(CHART_CYCLES);
@@ -173,6 +227,14 @@ export default function PlayScene({ audio, fx, shake, camera, onExit }) {
     startPerfRef.current = performance.now();
 
     const tick = () => {
+      // 播完就徹底停掉這個迴圈,不再重新排下一幀——修正一個曾經發生的
+      // bug:原本播完只有 `setEnded(true)` 顯示文字,tick 迴圈本身沒有
+      // 停,NPC 抽選/雙軌行李箱音符還是會繼續生成,新音符一直被判 miss
+      // 導致穩定度一直掉、嚴重失衡的暗角警示反覆觸發(看起來像「黑畫面
+      // 一直閃」),而且因為 NPC 雙軌音符會塞進 `notesRef`,導致下面
+      // 「有沒有播完」的判斷條件也連帶一直不成立、存檔永遠寫不進去。
+      if (endedRef.current) return;
+
       const now = performance.now();
       beatClockRef.current = (now - startPerfRef.current) / 1000;
       const t = beatClockRef.current;
@@ -202,8 +264,19 @@ export default function PlayScene({ audio, fx, shake, camera, onExit }) {
         const type = npc.rollSpawn(now, { npcWeight: 1, npcCap: 2, stability: liveStability }, Math.random);
         if (type) npc.spawn(type, now, { rand: Math.random });
       }
+      // ⚠️ 2026-07-15n 修正:這裡原本錯誤地拿「現在 t」去比對盤面音符,但
+      // NPC 這次雜訊/炸彈真正會落下命中的時間是 `t + APPROACH_SEC`(還要
+      // 再過 1.3 秒才會到判定線),不是現在——原本的寫法等於完全沒在檢查
+      // 「新雜訊/炸彈會不會跟真音符疊在同一軌道同一時間點」,導致炸彈常常
+      // 跟真音符疊在同一軌道/同一時間,玩家按下去會被判定成「打中炸彈」
+      // (combo 歸零 + 穩定度 -8)而不是打中音符,一直發生就會一直掉穩定度、
+      // 反覆觸發嚴重失衡的暗角警示(視覺上像畫面一直閃/變暗),這是使用者
+      // 實測回報「一直掉穩定度、畫面抖動全黑」的真正根因(比先前修的「播完
+      // 沒真的停下來」那個 bug 更關鍵,那個只影響播完之後,這個是遊玩全程
+      // 都會發生)。改成比對「未來真正會落下的時間點」才對。
+      const landTime = t + APPROACH_SEC;
       const isLaneFree = (lane) =>
-        !notesRef.current.some((n) => Math.abs(n.hitTime - t) < 0.35 && (n.lane === lane || n.doubleLane === lane));
+        !notesRef.current.some((n) => Math.abs(n.hitTime - landTime) < 0.35 && (n.lane === lane || n.doubleLane === lane));
       const npcResult = npc.tick(now, { isLaneFree, rand: Math.random });
       for (const req of npcResult.noiseSpawns) npc.noise.push({ ...req, hitTime: t + APPROACH_SEC });
       for (const req of npcResult.bombSpawns) npc.bombs.push({ ...req, hitTime: t + APPROACH_SEC });
@@ -262,8 +335,44 @@ export default function PlayScene({ audio, fx, shake, camera, onExit }) {
       view.shakeStyle = { transform: `translate(${sx}px, ${sy}px) rotate(${rotate}deg)` };
       bumpRender();
 
-      if (nextIdxRef.current >= chart.length && notesRef.current.length === 0) {
+      // 「播完了沒」只看備援譜面本身的音符還有沒有沒打到的(`kind !==
+      // "double"` 排除掉 NPC 占位行李客塞進 `notesRef` 的雙軌音符)——
+      // NPC 系統是獨立於「這首歌播完沒」之外的東西,不該讓它們一直生新
+      // 音符就導致「播完」這個條件永遠不成立。
+      const realNotesRemaining = notesRef.current.some((n) => n.kind !== "double");
+      if (nextIdxRef.current >= chart.length && !realNotesRemaining) {
+        endedRef.current = true;
         setEnded(true);
+        // 2026-07-15l 接線:通勤模式(有傳 stationIndex)結束時真的寫存檔
+        // ——過關 + 更新最佳分數,對照原始碼「單站跑完更新 stationCleared/
+        // stationBest」的行為(但這裡沒有做完整的結算/評級畫面,只做
+        // 存檔這一步)。讀 engine 內部即時 score(同一份物件參照,不是
+        // 閉包裡的 `score` React state,理由同 BossScene.jsx 的 liveScore
+        // 修正)。
+        //
+        // ⚠️ 2026-07-15p 修正:原本只改了 `save.routes.ruby`,但
+        // `loadSave()` 既有的合併邏輯(Phase 1 逐字搬過來的,#3 存檔格
+        // 機制)只要 `save.slots` 陣列存在(第一次 `writeSave()` 之後就會
+        // 存在,因為 `defaultSave()` 本來就帶了 3 個空存檔格),`routes.
+        // ruby` 就一律被視為「使用中存檔格」(`slots[activeSlot].ruby`)
+        // 的唯讀鏡像,下次 `loadSave()` 會直接拿 `slots[activeSlot].ruby`
+        // 蓋掉 `routes.ruby`——只改 `routes.ruby` 這個鏡像欄位,下次讀檔
+        // 就會被真正的存檔格資料蓋回去,等於白寫。真正該寫的是
+        // `save.slots[save.activeSlot].ruby`,這裡兩個都更新(鏡像欄位
+        // 也同步更新,避免同一次 render 裡有地方直接讀 `routes.ruby` 拿到
+        // 舊值)。
+        if (stationIndex != null && !resultSavedRef.current) {
+          resultSavedRef.current = true;
+          const liveScore = engineRef.current.getState().score;
+          const save = loadSave();
+          const slotRuby = save.slots[save.activeSlot].ruby;
+          slotRuby.stationCleared[stationIndex] = true;
+          slotRuby.stationBest[stationIndex] = Math.max(slotRuby.stationBest[stationIndex] || 0, liveScore);
+          save.routes.ruby = JSON.parse(JSON.stringify(slotRuby)); // 同步鏡像欄位
+          save.stats.plays = (save.stats.plays || 0) + 1;
+          writeSave(save);
+        }
+        return; // 不再排下一幀,徹底停掉 tick 迴圈
       }
       rafRef.current = requestAnimationFrame(tick);
     };
@@ -296,7 +405,7 @@ export default function PlayScene({ audio, fx, shake, camera, onExit }) {
     }}>
       <div style={{ width: "100%", maxWidth: 520 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
-          <div style={{ fontSize: 18, fontWeight: 700 }}>共GO · 判定測試場(最小可玩)</div>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>共GO · 判定測試場(最小可玩){track ? ` · ${track.name}` : ""}</div>
           <Button variant="ghost" onClick={onExit}>離開</Button>
         </div>
 
@@ -386,7 +495,9 @@ export default function PlayScene({ audio, fx, shake, camera, onExit }) {
 
         {ended && (
           <div style={{ marginTop: 14, textAlign: "center", fontSize: 13, color: "#7CFFB2" }}>
-            備援節奏播完了(這只是最小可玩測試,沒有結算畫面)。
+            {stationIndex != null
+              ? "這站跑完了,過關 + 最佳分數已經寫回存檔(這只是最小可玩測試,沒有完整結算畫面)。"
+              : "備援節奏播完了(這只是最小可玩測試,沒有結算畫面)。"}
           </div>
         )}
       </div>

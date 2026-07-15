@@ -69,3 +69,11 @@ export function clearedProgress(save) {
 }
 
 export function todayStr() { try { return new Date().toISOString().slice(0, 10); } catch (e) { return "0"; } }
+
+// isStationUnlocked(2026-07-15l 新增,StageMapScene 用):第 i 站(0-indexed)
+// 能不能選——第 0 站永遠開放,其餘要 `clearedProgress()` 算出的已解鎖進度
+// 涵蓋到這一站才行。純函式,拆出來方便 node 測試腳本直接驗證,不用真的
+// 建一個畫面。
+export function isStationUnlocked(save, i) {
+  return i <= clearedProgress(save);
+}

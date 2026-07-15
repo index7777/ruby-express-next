@@ -222,7 +222,11 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
           // (`=== false`)都走這條路徑。
           if (now - lastBulletAtRef.current >= b.bulletIntervalMs()) {
             lastBulletAtRef.current = now;
-            const isLaneFree = (lane) => !bulletsRef.current.some((n) => Math.abs(n.hitTime - t) < 0.4 && n.lane === lane);
+            // 2026-07-15n 修正(同 PlayScene.jsx 那個 bug):要比對的是這波
+            // 新彈幕實際會落下的時間點(`t + APPROACH_SEC`),不是現在的
+            // `t`,否則反堆疊完全沒作用。
+            const landTime = t + APPROACH_SEC;
+            const isLaneFree = (lane) => !bulletsRef.current.some((n) => Math.abs(n.hitTime - landTime) < 0.4 && n.lane === lane);
             const wave = b.spawnWave(t, { isLaneFree, rand: Math.random });
             for (const w of wave) bulletsRef.current.push({ id: `bullet-${now}-${w.lane}-${Math.random().toString(36).slice(2, 6)}`, lane: w.lane, hitTime: w.hitTime });
           }

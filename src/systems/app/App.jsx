@@ -37,7 +37,7 @@ import {
 } from "../ui/index.js";
 import { createBossManager } from "../boss/index.js";
 import { createNpcManager } from "../npc/index.js";
-import { PlayScene, BossScene } from "../game/index.js";
+import { PlayScene, BossScene, SongSelectScene, StageMapScene } from "../game/index.js";
 
 function Row({ label, ok, detail }) {
   return (
@@ -94,6 +94,16 @@ export default function App() {
       onEnter: () => setSceneLog((l) => [...l.slice(-6), "→ 進入 boss(BOSS 對戰場)"]),
       onExit: () => setSceneLog((l) => [...l.slice(-6), "← 離開 boss"]),
     });
+    // "songselect"(自由模式選曲)/"stagemap"(通勤模式站點地圖)是這次
+    // 2026-07-15l 接線新加的兩個場景,SCENE_NAMES 本來就列過這兩個名字。
+    sm.register("songselect", {
+      onEnter: () => setSceneLog((l) => [...l.slice(-6), "→ 進入 songselect(選曲)"]),
+      onExit: () => setSceneLog((l) => [...l.slice(-6), "← 離開 songselect"]),
+    });
+    sm.register("stagemap", {
+      onEnter: () => setSceneLog((l) => [...l.slice(-6), "→ 進入 stagemap(通勤路線圖)"]),
+      onExit: () => setSceneLog((l) => [...l.slice(-6), "← 離開 stagemap"]),
+    });
     sceneRef.current = sm;
   }
   const gotoScene = (name) => {
@@ -104,7 +114,11 @@ export default function App() {
     sceneRef.current.back();
     setCurrentScene(sceneRef.current.getCurrent());
   };
-  const enterPlayScene = () => {
+  const [selectedTrack, setSelectedTrack] = useState(null);
+  const [selectedStation, setSelectedStation] = useState(null);
+  const enterPlayScene = (track = null, stationIndex = null) => {
+    setSelectedTrack(track);
+    setSelectedStation(stationIndex);
     gotoScene("playing");
     setShowPlayScene(true);
   };
@@ -120,6 +134,34 @@ export default function App() {
   const exitBossScene = () => {
     setShowBossScene(false);
     goBackScene();
+  };
+
+  const [showSongSelect, setShowSongSelect] = useState(false);
+  const enterSongSelect = () => {
+    gotoScene("songselect");
+    setShowSongSelect(true);
+  };
+  const exitSongSelect = () => {
+    setShowSongSelect(false);
+    goBackScene();
+  };
+  const confirmSongSelect = (track) => {
+    setShowSongSelect(false);
+    enterPlayScene(track, null);
+  };
+
+  const [showStageMap, setShowStageMap] = useState(false);
+  const enterStageMap = () => {
+    gotoScene("stagemap");
+    setShowStageMap(true);
+  };
+  const exitStageMap = () => {
+    setShowStageMap(false);
+    goBackScene();
+  };
+  const confirmStageMap = (stationIndex, track) => {
+    setShowStageMap(false);
+    enterPlayScene(track, stationIndex);
   };
 
   const cameraRef = useRef(null);
@@ -347,8 +389,18 @@ export default function App() {
         shake={shakeRef.current}
         camera={cameraRef.current}
         onExit={exitPlayScene}
+        track={selectedTrack}
+        stationIndex={selectedStation}
       />
     );
+  }
+
+  if (showSongSelect) {
+    return <SongSelectScene onConfirm={confirmSongSelect} onBack={exitSongSelect} />;
+  }
+
+  if (showStageMap) {
+    return <StageMapScene onSelectStation={confirmStageMap} onBack={exitStageMap} />;
   }
 
   if (showBossScene) {
@@ -489,11 +541,35 @@ export default function App() {
             打一輪確認手感/音效/特效/NPC 事件都正常。
           </div>
           <button
-            onClick={enterPlayScene}
+            onClick={() => enterPlayScene()}
             style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid #FFD700", background: "transparent", color: "#FFD700", fontSize: 14, cursor: "pointer" }}
           >
-            ▶ 進判定測試場
+            ▶ 進判定測試場(備援節奏,不指定曲目)
           </button>
+        </div>
+
+        <div style={{ marginTop: 18, padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(63,224,255,0.35)" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>選曲 / 通勤路線圖(2026-07-15l 接線:SongSelectScene + StageMapScene)</div>
+          <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
+            「選曲」是自由模式的平面歌曲清單(`DEFAULT_TRACKS`);「通勤路線圖」
+            是紅寶線 5 站地圖,有真的過關/鎖定狀態(讀寫 `save/` 存檔)。兩者
+            選完都會直接進判定測試場。素材(`web-build/assets/`)還沒搬進這
+            個專案,實際播放時一定會是備援節奏,不是真的曲目音樂/譜面。
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={enterSongSelect}
+              style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: "1px solid #3FE0FF", background: "transparent", color: "#3FE0FF", fontSize: 14, cursor: "pointer" }}
+            >
+              ▶ 選曲
+            </button>
+            <button
+              onClick={enterStageMap}
+              style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: "1px solid #3FE0FF", background: "transparent", color: "#3FE0FF", fontSize: 14, cursor: "pointer" }}
+            >
+              ▶ 通勤路線圖
+            </button>
+          </div>
         </div>
 
         <div style={{ marginTop: 18, padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(226,75,74,0.35)" }}>
