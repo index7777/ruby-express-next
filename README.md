@@ -32,7 +32,7 @@ repo 同步，避免 `node_modules` 塞爆 Drive 同步。資料夾根目錄的 
 工作前後記得都要跑一次。詳見 `ruby-express` 主 repo 的 `HANDOFF.md`
 「🔄 異地同步」一節。
 
-## 目前狀態（Phase 7 完成 + Phase 6 + Phase 5 + Phase 4 + Phase 3 GameEngine 核心實作完成，2026-07-15）
+## 目前狀態（Phase 8 完成 + Phase 7 + Phase 6 + Phase 5 + Phase 4 + Phase 3 GameEngine 核心實作完成，2026-07-15）
 
 - ✅ Vite + React 18 建置骨架，`npm run build` 已在沙箱驗證可正常編譯。
 - ✅ 15 個系統模組資料夾已建立於 `src/systems/`，每個資料夾都有
@@ -92,22 +92,38 @@ repo 同步，避免 `node_modules` 塞爆 Drive 同步。資料夾根目錄的 
   互不打斷/較弱不打斷較強規則)全過,既有 4 支測試(camera/judge-parity/
   miss-wiring/scene)回歸也全過。`App.jsx` 新增一個可以手動觸發各 preset、
   即時看粒子噴發跟光效疊層的展示區塊。
+- ✅ **Phase 8 完成**：UI 設計系統(`systems/ui/`)——排查後發現
+  `GameButton`/`styles` 並非孤兒引用,而是 `web-build/index.html` 6492 行裡
+  真的存在、真的被 7 處呼叫的既有元件/樣式物件(定義在 5874/5970 行),這次
+  是把這套真的共用的語言逐一對照搬過來、整理成有名字的 tokens,不是憑空
+  設計新系統。`tokens.js`(COLORS/RADIUS/SHADOW/SPACING/FONT/TRANSITION,
+  每個常數都標明抄自哪個既有 style key)、`utils.js`(純邏輯:`clamp01`/
+  `stabilityColor`——逐字對照原始碼 3764 行穩定度三段閾值/`progressColor`)、
+  `Button.jsx`(搬自真的存在的 `GameButton`,pointerDown/Up/Leave/Cancel
+  四事件都保留)、`Panel.jsx`(合併 `resultPanel`/`tiltAskCard`)、
+  `Card.jsx`(合併 `routeCard`/`songCard`/`stationRow`)、
+  `ProgressBar.jsx`(合併 `stabilityTrack`/`stabilityFill`/`balanceBar`)、
+  `Dialog.jsx`(對照 `tiltAskOverlay`+`tiltAskCard`)。沙箱 `npm run build`
+  (82 modules)+ node 測試腳本 `test-ui.mjs`(26 項斷言)全過,既有 5 支
+  測試回歸也全過。`App.jsx` 新增獨立展示區塊(不動任何已驗證過的舊畫面)。
 - ❌ 判定/BOSS 專屬的具名合成音效(playBump/playChime/playDoorOpen 等)
   刻意留到 Judge 接線階段跟 Judge/Boss 邏輯一起搬。
 - ❌ 尚未搬入 `web-build/assets/`（166 個檔案）與 `manifest.webmanifest`
   實體檔案（等真的要接上畫面時再一次搬）。
 
 **麻煩你的部分**：`cd web-build-next && npm install && npm run dev`，打開
-瀏覽器確認：(1) 畫面顯示「Phase 1+2+4+5+6+7 搬移驗證 — 全部模組載入正常
+瀏覽器確認：(1) 畫面顯示「Phase 1+2+4+5+6+7+8 搬移驗證 — 全部模組載入正常
 ✓」；(2) 點一下「▶ 播放刷票口嗶聲測試」按鈕，確認真的聽到兩聲
 「嗶—嗶—」；(3) 在 FX 展示區塊點過 10 種特效按鈕、Screen Shake、Hit
 Stop；(4) 在 Scene Manager 展示區塊點幾個 goto 按鈕跟 back()；(5) 在
 Camera 展示區塊點過各個 BOSS/Combo 按鈕，確認畫面框真的有縮放/平移
-效果、上方數值有跟著變化；(6) 在新增的 Particle / Lighting 展示區塊點過
-5 種粒子 preset 按鈕(確認框內真的有粒子噴發/飛出去/消散)跟 4 種光效
-preset 按鈕(確認框內有色調疊層跟著淡入淡出)。六項都確認沒問題後回報，
-之後會討論 GameEngine/Scene Manager/Camera/Particle/Lighting 要不要開始
-接線、或先做 Phase 8(UI 設計系統)等其他階段。
+效果、上方數值有跟著變化；(6) 在 Particle / Lighting 展示區塊點過 5 種
+粒子 preset 按鈕(確認框內真的有粒子噴發/飛出去/消散)跟 4 種光效 preset
+按鈕(確認框內有色調疊層跟著淡入淡出)；(7) 在新增的 UI 設計系統展示
+區塊點過三種 Button variant、點過 Card 切換選中、用按鈕調過 ProgressBar
+數值(確認顏色隨數值三段變化)、點開/關過 Dialog。七項都確認沒問題後
+回報，之後會討論 GameEngine/Scene Manager/Camera/Particle/Lighting/UI
+要不要開始接線、或先做 Phase 9(下一階段規劃)。
 
 ## 系統模組列表
 

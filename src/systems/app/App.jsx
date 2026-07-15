@@ -31,6 +31,10 @@ import {
   createLightingManager, applyLightingPreset,
   ParticleLayer, LightingLayer,
 } from "../particle/index.js";
+import {
+  COLORS as UI_COLORS, clamp01, stabilityColor, progressColor,
+  Button, Panel, Card, ProgressBar, Dialog,
+} from "../ui/index.js";
 import { PlayScene } from "../game/index.js";
 
 function Row({ label, ok, detail }) {
@@ -146,6 +150,10 @@ export default function App() {
     applyLightingPreset(lightingRef.current, name, ...args);
   };
 
+  const [uiCardActive, setUiCardActive] = useState(0);
+  const [uiProgress, setUiProgress] = useState(0.7);
+  const [uiDialogOpen, setUiDialogOpen] = useState(false);
+
   const checks = useMemo(() => {
     const save = loadSave();
     const rank = accRank({ perfect: 10, great: 0, good: 0, miss: 0 });
@@ -242,6 +250,10 @@ export default function App() {
           return Math.abs(lighting.getChannel("a", 500).intensity - 0.5) < 1e-9;
         })(), detail: "較弱觸發不會打斷還沒播完的較強觸發" },
       { label: "particle+lighting presets", ok: typeof emitParticlePreset === "function" && typeof applyLightingPreset === "function", detail: "emitParticlePreset / applyLightingPreset 已匯出" },
+      { label: "ui: clamp01/progressColor", ok: (() => {
+          return clamp01(-1) === 0 && clamp01(2) === 1 && progressColor(0.05) === UI_COLORS.danger;
+        })(), detail: "數值夾取 + 三段式配色規則正確" },
+      { label: "ui: stabilityColor 對照原始碼閾值", ok: stabilityColor(10) === "#FF2222" && stabilityColor(31) === "#36D367", detail: "10=危險紅 / 31=安全綠" },
     ];
   }, []);
 
@@ -303,7 +315,7 @@ export default function App() {
       <div style={{ width: "100%", maxWidth: 480 }}>
         <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>共GO · Ruby Express</div>
         <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 14 }}>
-          Phase 1+2+4+5+6+7 搬移驗證 + Phase 3 判定測試場接線 — {allOk ? "全部模組載入正常 ✓" : "有模組載入異常，請截圖回報 ✗"}
+          Phase 1+2+4+5+6+7+8 搬移驗證 + Phase 3 判定測試場接線 — {allOk ? "全部模組載入正常 ✓" : "有模組載入異常，請截圖回報 ✗"}
         </div>
         <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 12, overflow: "hidden" }}>
           {checks.map((c) => <Row key={c.label} {...c} />)}
@@ -474,6 +486,57 @@ export default function App() {
             <button onClick={() => triggerLightingPreset("dangerVignette")} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #FF2222", background: "transparent", color: "#FF2222", fontSize: 12, cursor: "pointer" }}>嚴重失衡警戒</button>
             <button onClick={() => triggerLightingPreset("comboAura", 300)} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #FFD700", background: "transparent", color: "#FFD700", fontSize: 12, cursor: "pointer" }}>combo 光暈</button>
           </div>
+        </div>
+
+        <div style={{ marginTop: 18, padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.04)", position: "relative" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>UI 設計系統展示(ui 系統唯一沒辦法在沙箱驗證的部分)</div>
+          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 8 }}>
+            這裡的元件是搬自 `web-build/index.html` 真的存在的 `GameButton`/`styles`,
+            不是新設計——現有展示區塊的按鈕維持原樣沒有換,只是新增這個獨立區塊。
+          </div>
+
+          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Button</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+            <Button variant="primary" onClick={() => setUiDialogOpen(true)}>primary</Button>
+            <Button variant="secondary" onClick={() => setUiProgress((p) => Math.max(0, p - 0.15))}>secondary</Button>
+            <Button variant="ghost" onClick={() => setUiProgress((p) => Math.min(1, p + 0.15))}>ghost</Button>
+          </div>
+
+          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Panel</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <Panel variant="panel" style={{ flex: 1, fontSize: 11 }}>variant="panel"</Panel>
+            <Panel variant="card" style={{ flex: 1, fontSize: 11, maxWidth: "none" }}>variant="card"</Panel>
+          </div>
+
+          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Card(點擊切換選中)</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+            {["紅線", "藍線", "綠線"].map((name, i) => (
+              <Card key={name} active={uiCardActive === i} onClick={() => setUiCardActive(i)} style={{ fontSize: 13 }}>
+                {name}
+              </Card>
+            ))}
+          </div>
+
+          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>ProgressBar(用 secondary/ghost 按鈕調整數值,三段式配色)</div>
+          <ProgressBar value={uiProgress} style={{ marginBottom: 6 }} />
+          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 12, fontFamily: "monospace" }}>value={uiProgress.toFixed(2)}</div>
+
+          <Dialog
+            open={uiDialogOpen}
+            title="Dialog 展示"
+            onDismiss={() => setUiDialogOpen(false)}
+            actions={
+              <>
+                <Button variant="primary" onClick={() => setUiDialogOpen(false)}>關閉</Button>
+                <Button variant="ghost" onClick={() => setUiDialogOpen(false)}>略過</Button>
+              </>
+            }
+          >
+            <div style={{ fontSize: 13, lineHeight: 1.7, color: "#C0C8D0", textAlign: "left", width: "100%" }}>
+              對照原始碼 tiltAskOverlay/tiltAskCard(陀螺儀權限詢問/取名彈窗)搬過來的殼元件,
+              點擊「primary」按鈕觸發,點背景或按鈕都能關閉。
+            </div>
+          </Dialog>
         </div>
       </div>
     </div>
