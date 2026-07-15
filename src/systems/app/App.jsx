@@ -26,6 +26,11 @@ import { CATEGORIES, VolumeModel, isMenuBgmSilentPhase, createAudioManager } fro
 import { createFxManager, createScreenShake, createHitStop, FxLayer, ANIMATIONS } from "../effect/index.js";
 import { createSceneManager, SCENE_NAMES } from "../scene/index.js";
 import { createCameraManager, applyCameraPreset } from "../camera/index.js";
+import {
+  createParticleManager, emitParticlePreset,
+  createLightingManager, applyLightingPreset,
+  ParticleLayer, LightingLayer,
+} from "../particle/index.js";
 import { PlayScene } from "../game/index.js";
 
 function Row({ label, ok, detail }) {
@@ -126,6 +131,21 @@ export default function App() {
     runCameraLoop();
   };
 
+  const particleRef = useRef(null);
+  const lightingRef = useRef(null);
+  if (!particleRef.current) particleRef.current = createParticleManager();
+  if (!lightingRef.current) lightingRef.current = createLightingManager();
+  const particleBoxRef = useRef(null);
+  const triggerParticlePreset = (name, ...args) => {
+    const rect = particleBoxRef.current?.getBoundingClientRect();
+    const x = rect ? rect.width / 2 : 150;
+    const y = rect ? rect.height / 2 : 70;
+    emitParticlePreset(particleRef.current, name, x, y, ...args);
+  };
+  const triggerLightingPreset = (name, ...args) => {
+    applyLightingPreset(lightingRef.current, name, ...args);
+  };
+
   const checks = useMemo(() => {
     const save = loadSave();
     const rank = accRank({ perfect: 10, great: 0, good: 0, miss: 0 });
@@ -200,6 +220,28 @@ export default function App() {
           cam.slowMotion(0.25, 1000, 0);
           return cam.getTimeScale(0) === 0.25 && cam.getTimeScale(1000) === 1;
         })(), detail: "0ms=0.25倍速 / 1000ms=恢復正常" },
+      { label: "particle: 歸還池復用", ok: (() => {
+          const pm = createParticleManager();
+          pm.spawnOne({ x: 0, y: 0, vx: 0, vy: 0, lifeMs: 10 });
+          pm.update(0.02); pm.prune();
+          const poolAfterPrune = pm.poolSize();
+          pm.spawnOne({ x: 0, y: 0, vx: 0, vy: 0, lifeMs: 1000 });
+          return poolAfterPrune === 1 && pm.poolSize() === 0 && pm.count() === 1;
+        })(), detail: "到期粒子歸還池子,下次 spawn 優先復用" },
+      { label: "particle: emit 位移模擬", ok: (() => {
+          const pm = createParticleManager();
+          pm.spawnOne({ x: 0, y: 0, vx: 100, vy: -50, gravity: 200, lifeMs: 1000 });
+          pm.update(0.5);
+          const [p] = pm.getActive();
+          return Math.abs(p.x - 50) < 1e-9;
+        })(), detail: "x += vx * dt 積分正確" },
+      { label: "lighting: 頻道衰減 + 互不打斷", ok: (() => {
+          const lighting = createLightingManager();
+          lighting.trigger("a", { intensity: 1, durationMs: 1000 }, 0);
+          lighting.trigger("a", { intensity: 0.3, durationMs: 1000 }, 500);
+          return Math.abs(lighting.getChannel("a", 500).intensity - 0.5) < 1e-9;
+        })(), detail: "較弱觸發不會打斷還沒播完的較強觸發" },
+      { label: "particle+lighting presets", ok: typeof emitParticlePreset === "function" && typeof applyLightingPreset === "function", detail: "emitParticlePreset / applyLightingPreset 已匯出" },
     ];
   }, []);
 
@@ -261,7 +303,7 @@ export default function App() {
       <div style={{ width: "100%", maxWidth: 480 }}>
         <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>共GO · Ruby Express</div>
         <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 14 }}>
-          Phase 1+2+4+5+6 搬移驗證 + Phase 3 判定測試場接線 — {allOk ? "全部模組載入正常 ✓" : "有模組載入異常，請截圖回報 ✗"}
+          Phase 1+2+4+5+6+7 搬移驗證 + Phase 3 判定測試場接線 — {allOk ? "全部模組載入正常 ✓" : "有模組載入異常，請截圖回報 ✗"}
         </div>
         <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 12, overflow: "hidden" }}>
           {checks.map((c) => <Row key={c.label} {...c} />)}
@@ -395,6 +437,42 @@ export default function App() {
             <button onClick={() => triggerCameraPreset("comboMilestone", 300)} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #FFD700", background: "transparent", color: "#FFD700", fontSize: 12, cursor: "pointer" }}>Combo 里程碑</button>
             <button onClick={() => triggerCameraPreset("bossDeath")} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #FF5A6E", background: "transparent", color: "#FF5A6E", fontSize: 12, cursor: "pointer" }}>BOSS 死亡</button>
             <button onClick={resetCamera} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #C0C8D0", background: "transparent", color: "#C0C8D0", fontSize: 12, cursor: "pointer" }}>reset</button>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 18, padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.04)" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Particle / Lighting 展示(particle 系統唯一沒辦法在沙箱驗證的部分)</div>
+
+          <div
+            ref={particleBoxRef}
+            style={{
+              position: "relative", height: 140, borderRadius: 10, overflow: "hidden",
+              background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.1)",
+              marginBottom: 10,
+            }}
+          >
+            <LightingLayer lighting={lightingRef.current} style={{ position: "absolute", inset: 0 }} />
+            <ParticleLayer pm={particleRef.current} style={{ position: "absolute", inset: 0 }} />
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, opacity: 0.5, pointerEvents: "none" }}>
+              粒子/光效會出現在這個框內
+            </div>
+          </div>
+
+          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Particle presets</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+            <button onClick={() => triggerParticlePreset("comboMilestone", 300)} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #FFD700", background: "transparent", color: "#FFD700", fontSize: 12, cursor: "pointer" }}>combo 里程碑</button>
+            <button onClick={() => triggerParticlePreset("perfectHit")} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #FFD700", background: "transparent", color: "#FFD700", fontSize: 12, cursor: "pointer" }}>perfect hit</button>
+            <button onClick={() => triggerParticlePreset("greatHit")} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #63C2FF", background: "transparent", color: "#63C2FF", fontSize: 12, cursor: "pointer" }}>great hit</button>
+            <button onClick={() => triggerParticlePreset("explosion")} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #FF9F45", background: "transparent", color: "#FF9F45", fontSize: 12, cursor: "pointer" }}>爆炸碎屑</button>
+            <button onClick={() => triggerParticlePreset("trail", Math.PI)} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #59E38C", background: "transparent", color: "#59E38C", fontSize: 12, cursor: "pointer" }}>必殺拖尾</button>
+          </div>
+
+          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Lighting presets</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <button onClick={() => triggerLightingPreset("bossPhaseAlertP2")} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #FFA83C", background: "transparent", color: "#FFA83C", fontSize: 12, cursor: "pointer" }}>BOSS P2 警示</button>
+            <button onClick={() => triggerLightingPreset("bossPhaseAlertP3")} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #FF3C3C", background: "transparent", color: "#FF3C3C", fontSize: 12, cursor: "pointer" }}>BOSS P3 警示</button>
+            <button onClick={() => triggerLightingPreset("dangerVignette")} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #FF2222", background: "transparent", color: "#FF2222", fontSize: 12, cursor: "pointer" }}>嚴重失衡警戒</button>
+            <button onClick={() => triggerLightingPreset("comboAura", 300)} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #FFD700", background: "transparent", color: "#FFD700", fontSize: 12, cursor: "pointer" }}>combo 光暈</button>
           </div>
         </div>
       </div>
