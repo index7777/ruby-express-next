@@ -130,7 +130,14 @@ export class NpcManager {
         for (let i = 0; i < n; i++) {
           const lane = this._pickFreeLane(isLaneFree, rand);
           if (lane != null) {
-            noiseSpawns.push({ id: this._nextId("noise"), lane, hitTime: now + 0.4 });
+            // 注意:這裡刻意不算 hitTime——NpcManager 全部用「呼叫端傳入的
+            // now」這個單一時間軸(ms,對照 durationMs/interval 這些欄位),
+            // 不知道呼叫端的譜面/下落動畫是用秒數的 beatClock 算 hitTime
+            // (對照 boss/bossManager.js 的 spawnWave 也是同樣的雙時間軸
+            // 情境:APPROACH_SEC 是秒,是呼叫端自己的判定/渲染時間軸的事,
+            // 呼叫端收到 { id, lane } 後自己用 `t + APPROACH_SEC` 算 hitTime,
+            // 塞進要餵給 judgeCore 的 noise/bombs 陣列)。
+            noiseSpawns.push({ id: this._nextId("noise"), lane });
             this.noiseAttackCount.set(npc.id, (this.noiseAttackCount.get(npc.id) || 0) + 1);
           }
         }
@@ -138,12 +145,12 @@ export class NpcManager {
       if (npc.type === "kid" && !cleanerBlocking && now - npc.lastEventAt >= 850) {
         npc.lastEventAt = now;
         const lane = this._pickFreeLane(isLaneFree, rand);
-        if (lane != null) bombSpawns.push({ id: this._nextId("bomb"), lane, hitTime: now + 0.4 });
+        if (lane != null) bombSpawns.push({ id: this._nextId("bomb"), lane });
       }
       if (npc.type === "luggage" && npc.remainSpawn > 0 && now - npc.lastEventAt >= 1200) {
         npc.lastEventAt = now;
         const pairStart = Math.floor(rand() * (LANE_COUNT - 1));
-        luggageSpawns.push({ id: this._nextId("luggage"), pairStart, hitTime: now + 0.4, kind: "double" });
+        luggageSpawns.push({ id: this._nextId("luggage"), pairStart, kind: "double" });
         npc.remainSpawn -= 1;
         if (npc.remainSpawn <= 0) npc.phase2 = true;
       }

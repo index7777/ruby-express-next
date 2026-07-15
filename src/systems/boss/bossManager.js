@@ -154,6 +154,17 @@ export class BossManager {
     return pool[Math.floor(rand() * pool.length) % pool.length];
   }
 
+  // ── chart 驅動模式的額外插音符機率(對照 2139 行)── P1 不會插,P2/P3
+  // 各自的機率/延遲不同。呼叫端(chart 消耗迴圈)在生出一顆 chart 音符後
+  // 呼叫這個,拿到非 null 結果就在「另一個隨機軌道」多生一顆(要選哪個
+  // 軌道由呼叫端決定,這裡只負責機率/延遲判斷)。
+  rollExtraChartNote(rand = defaultRand) {
+    if (this.phase === 1) return null;
+    const chance = this.phase === 3 ? 0.5 : 0.3;
+    if (rand() >= chance) return null;
+    return { delaySec: this.phase === 3 ? 0.08 : 0.05 };
+  }
+
   // ── 特殊招式對應的彈幕(對照 signalAttack/spitAttack,3277-3298 行)──
   // signal:洗牌後每軌各生一顆,保證不同軌(避免同軌疊到打不完);
   // spit:2 顆隨機軌道,固定延遲 0.1s / 0.5s。

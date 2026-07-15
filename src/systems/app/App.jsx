@@ -37,7 +37,7 @@ import {
 } from "../ui/index.js";
 import { createBossManager } from "../boss/index.js";
 import { createNpcManager } from "../npc/index.js";
-import { PlayScene } from "../game/index.js";
+import { PlayScene, BossScene } from "../game/index.js";
 
 function Row({ label, ok, detail }) {
   return (
@@ -88,6 +88,12 @@ export default function App() {
       onEnter: () => setSceneLog((l) => [...l.slice(-6), "→ 進入 playing(判定測試場)"]),
       onExit: () => setSceneLog((l) => [...l.slice(-6), "← 離開 playing"]),
     });
+    // "boss"(BOSS 對戰場)是這次 Phase 9 接線新加的場景,SCENE_NAMES 本來
+    // 就列過這個名字(對照原始碼既有的 phase 字串),這次終於真的接上畫面。
+    sm.register("boss", {
+      onEnter: () => setSceneLog((l) => [...l.slice(-6), "→ 進入 boss(BOSS 對戰場)"]),
+      onExit: () => setSceneLog((l) => [...l.slice(-6), "← 離開 boss"]),
+    });
     sceneRef.current = sm;
   }
   const gotoScene = (name) => {
@@ -104,6 +110,15 @@ export default function App() {
   };
   const exitPlayScene = () => {
     setShowPlayScene(false);
+    goBackScene();
+  };
+  const [showBossScene, setShowBossScene] = useState(false);
+  const enterBossScene = () => {
+    gotoScene("boss");
+    setShowBossScene(true);
+  };
+  const exitBossScene = () => {
+    setShowBossScene(false);
     goBackScene();
   };
 
@@ -336,6 +351,18 @@ export default function App() {
     );
   }
 
+  if (showBossScene) {
+    return (
+      <BossScene
+        audio={audioRef.current}
+        fx={fxRef.current}
+        shake={shakeRef.current}
+        camera={cameraRef.current}
+        onExit={exitBossScene}
+      />
+    );
+  }
+
   const triggerFx = (type) => {
     fxRef.current.spawn(type, { x: 20 + Math.random() * 60, y: 30 + Math.random() * 40 });
   };
@@ -454,16 +481,34 @@ export default function App() {
         </div>
 
         <div style={{ marginTop: 18, padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,215,0,0.3)" }}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>判定測試場(Phase 3:GameEngine + Scene + Camera + FX + Audio 實際接線)</div>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>判定測試場(GameEngine + Scene + Camera + FX + Audio + Particle + Lighting + UI + NPC 實際接線)</div>
           <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
-            最小可玩子集:只有一般音符判定(5 軌 D/F/J/K/L),沒有 BOSS/道具/NPC。
-            完全沒經過瀏覽器實測,務必實際打一輪確認手感/音效/特效都正常。
+            最小可玩子集:一般音符判定(5 軌 D/F/J/K/L)+ NPC 事件(擴音上班族/
+            亂跑小孩/背包客/站務員/捷運警察等會自動出現)+ combo 里程碑粒子/
+            光效。沒有道具/肉鴿卡/平衡對抗。完全沒經過瀏覽器實測,務必實際
+            打一輪確認手感/音效/特效/NPC 事件都正常。
           </div>
           <button
             onClick={enterPlayScene}
             style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid #FFD700", background: "transparent", color: "#FFD700", fontSize: 14, cursor: "pointer" }}
           >
             ▶ 進判定測試場
+          </button>
+        </div>
+
+        <div style={{ marginTop: 18, padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(226,75,74,0.35)" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>BOSS 對戰場(Phase 9 接線:BossManager + GameEngine + Camera + Particle + Lighting + UI)</div>
+          <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
+            按 D/F/J/K/L 打彈幕,打到血量門檻會觸發平衡對抗(按住 ←/→ 抵抗
+            甩動方向),打到瀕死會觸發公事包長按 QTE(按住對應軌道鍵)。
+            完全沒經過瀏覽器實測,務必實際打一輪確認彈幕/QTE/平衡對抗/
+            死亡復活流程都正常。
+          </div>
+          <button
+            onClick={enterBossScene}
+            style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid #FF3C3C", background: "transparent", color: "#FF3C3C", fontSize: 14, cursor: "pointer" }}
+          >
+            ▶ 進 BOSS 對戰場
           </button>
         </div>
 

@@ -5,7 +5,13 @@
 (動態光源/色調疊層)——BOSS 階段警示、嚴重失衡警戒、combo 光暈，跟原始碼裡
 各處各自硬寫的 CSS keyframe 是同一批視覺效果，這裡整理成統一的資料模型。
 
-## 狀態：Phase 7 完成（建立系統，尚未接線）
+## 狀態：Phase 7 完成 + 2026-07-15j 已接線
+
+- ⚠️ **接線更新**:`ParticleLayer`/`LightingLayer` 已經接進
+  `game/PlayScene.jsx`(Perfect/Great 判定粒子、combo 里程碑碎屑+金色
+  光暈、嚴重失衡暗角警示)跟新增的 `game/BossScene.jsx`(finisher 成功
+  爆炸粒子、BOSS 階段警示光效),`PARTICLE_PRESETS`/`LIGHTING_PRESETS`
+  不再只是「純文件參考」,詳見 `game/README.md`。
 
 - `particleManager.js`：`ParticleManager` 類別，維護一個歸還池
   (`_pool`)，粒子死亡後不丟棄物件、清空欄位放回池子，下次 `spawn` 優先

@@ -32,7 +32,7 @@ repo 同步，避免 `node_modules` 塞爆 Drive 同步。資料夾根目錄的 
 工作前後記得都要跑一次。詳見 `ruby-express` 主 repo 的 `HANDOFF.md`
 「🔄 異地同步」一節。
 
-## 目前狀態（Phase 9 完成 + Phase 8 + Phase 7 + Phase 6 + Phase 5 + Phase 4 + Phase 3 GameEngine 核心實作完成，2026-07-15）
+## 目前狀態（Phase 1~9 系統建置完成 + 接線里程碑,2026-07-15）
 
 - ✅ Vite + React 18 建置骨架，`npm run build` 已在沙箱驗證可正常編譯。
 - ✅ 15 個系統模組資料夾已建立於 `src/systems/`，每個資料夾都有
@@ -125,22 +125,87 @@ repo 同步，避免 `node_modules` 塞爆 Drive 同步。資料夾根目錄的 
 - ❌ 尚未搬入 `web-build/assets/`（166 個檔案）與 `manifest.webmanifest`
   實體檔案（等真的要接上畫面時再一次搬）。
 
-**麻煩你的部分**：`cd web-build-next && npm install && npm run dev`，打開
-瀏覽器確認：(1) 畫面顯示「Phase 1+2+4+5+6+7+8+9 搬移驗證 — 全部模組載入
-正常 ✓」；(2) 點一下「▶ 播放刷票口嗶聲測試」按鈕，確認真的聽到兩聲
-「嗶—嗶—」；(3) 在 FX 展示區塊點過 10 種特效按鈕、Screen Shake、Hit
-Stop；(4) 在 Scene Manager 展示區塊點幾個 goto 按鈕跟 back()；(5) 在
-Camera 展示區塊點過各個 BOSS/Combo 按鈕，確認畫面框真的有縮放/平移
-效果、上方數值有跟著變化；(6) 在 Particle / Lighting 展示區塊點過 5 種
-粒子 preset 按鈕(確認框內真的有粒子噴發/飛出去/消散)跟 4 種光效 preset
-按鈕(確認框內有色調疊層跟著淡入淡出)；(7) 在 UI 設計系統展示區塊點過
-三種 Button variant、點過 Card 切換選中、用按鈕調過 ProgressBar 數值
-(確認顏色隨數值三段變化)、點開/關過 Dialog；(8) 在新增的 BOSS 系統展示
-區塊連續點「Perfect 命中」把 BOSS 打到 finisher QTE 出現，試一下「補滿
-(成功)」跟「放掉(失敗)」兩種結果；(9) 在新增的 NPC 系統展示區塊點過
-幾次「生成一個 NPC」，確認清單會出現不同型別、增益型別互斥、時間會倒數。
-九項都確認沒問題後回報，之後會討論 GameEngine/Scene Manager/Camera/
-Particle/Lighting/UI/BOSS/NPC 要不要開始接線、或規劃下一階段。
+### 🔌 接線里程碑(2026-07-15j:GameEngine/Scene/Camera/Particle/Lighting/UI/BOSS/NPC 全部接進真正畫面)
+
+Phase 1~9 是各自獨立、只有 node 測試驗證過的系統,`App.jsx` 之前的展示
+區塊也都只是「手動觸發看數值變化」的示範,沒有真的接成能玩的畫面。這輪
+使用者要求「全部一次接完」,把 8 個系統接進兩個真正可以按鍵盤玩的場景:
+
+- **`systems/game/PlayScene.jsx` 擴充**(一般判定測試場,原本 Phase 3
+  就有,這次加內容):Perfect/Great 判定會噴粒子、combo 里程碑有碎屑+
+  金色光暈、嚴重失衡有暗角警示(Particle+Lighting);離開按鈕/穩定度條
+  換成 `Button`/`ProgressBar` 元件(UI);擴音上班族/亂跑小孩/背包客/
+  站務員/捷運警察等 NPC 會自動抽選出現,雜訊/炸彈/雙軌行李箱音符真的會
+  掉下來讓你打,增益效果真的接進 `gameEngine.js` 既有的 `setBuffXxxUntil`
+  API(NPC)。
+- **`systems/game/BossScene.jsx` 新增**(BOSS 對戰場):`BossManager` 接
+  `gameEngine.js` 原本就寫好、卻沒人接線過的 `phase:"boss"` 分支——彈幕
+  真的會依階段變速/變花樣掉下來,打到血量門檻真的會跳出平衡對抗閘門
+  (按住 ←/→ 抵抗),打到瀕死真的會跳出公事包 finisher 長按 QTE,死亡會
+  跳出復活/重新挑戰/下車三選一,勝利有結算畫面——全部套用 Camera 震動/
+  Particle 爆炸粒子/Lighting 階段警示/UI 的 Dialog·ProgressBar·Button。
+- `App.jsx` 新增「▶ 進 BOSS 對戰場」按鈕(跟原本「▶ 進判定測試場」並列),
+  兩個場景都掛在 `SceneManager` 底下(`"playing"`/`"boss"`)。
+- 沙箱驗證:`npm run build`(88 modules)通過,既有 8 支測試(camera/
+  judge-parity/miss-wiring/particle/scene/ui/boss/npc,共 234 項斷言)
+  全過回歸——但兩個場景本身是 `.jsx`,沒有對應 node 測試腳本可以驗證
+  「真的能不能玩」,詳見 `systems/game/README.md`「這次刻意沒做的部分」
+  (主遊戲迴圈效能重構/chart 驅動彈幕/存檔哩程系統/BOSS+NPC 同時出現
+  都還沒做)。
+
+**麻煩你的部分**(這輪範圍很大,務必兩個新/改過的場景都實測)：
+`cd web-build-next && npm install && npm run dev`，打開瀏覽器確認：
+
+1. 畫面顯示「Phase 1+2+4+5+6+7+8+9 搬移驗證 — 全部模組載入正常 ✓」。
+2. 「判定測試場」:按 D/F/J/K/L 打音符,確認 Perfect/Great 有粒子噴發、
+   combo 到 50/100/200/300 有碎屑+金色光暈、放著不管讓穩定度歸零有暗角
+   警示;等一下子應該會看到 NPC(👤 標籤)自動出現,雜訊(📶)/炸彈(💣)
+   會掉下來——雜訊打到加分、炸彈打到會扣血/斷 combo、放著讓炸彈自然飛過
+   不會扣分。
+3. 「BOSS 對戰場」:按 D/F/J/K/L 打彈幕,確認彈幕真的會依 BOSS 血量變快/
+   變花樣;打到血量 50%/30% 門檻會跳出「平衡對抗」畫面,按住 ←/→ 試試看
+   能不能撐住;打到瀕死會跳出「長壓接住公事包」QTE,按住對應軌道鍵試
+   成功/失敗兩種結果;死亡後試「復活接關」跟「重新挑戰」;打贏(把 hp
+   壓到 0)看結算畫面。
+4. 兩個場景的「離開」按鈕都要能正常回到搬移驗證清單畫面。
+
+四項都確認沒問題後回報，之後會討論主遊戲迴圈效能重構/BOSS chart 驅動
+彈幕/存檔系統接線,或規劃下一階段。
+
+### 🔧 接線里程碑後續補完(2026-07-15k:效能優化 + BOSS chart 模式 + 存檔接線)
+
+使用者接著要求把上面提到的三件「之後再討論」的事一次做完:
+
+- **主遊戲迴圈效能優化**:`PlayScene.jsx`/`BossScene.jsx` 原本每幀有 5 個
+  以上分開的 `setState` 呼叫,改成收在一個 `viewRef`(普通物件)+ 每幀
+  一次 `setRenderTick()`,跟 `ParticleLayer.jsx`/`FxLayer.jsx` 同樣的
+  「manager 塞 ref + tick counter 逼重繪」模式。**這不是規格書講的完整
+  「game loop 完全脫離 React」重構**(那需要 Canvas/WebGL 渲染),只是
+  收斂每幀重複的 setState 呼叫這個較小的優化,詳見 `systems/game/
+  README.md`。
+- **BOSS chart 驅動彈幕模式**:`BossScene.jsx` 掛載時會 fetch 對應 BOSS
+  的 `.normal.json` 譜面,拿得到就照譜面時間點生彈幕(P2/P3 依機率多插
+  一顆額外音符),拿不到就退回原本的備援固定間隔模式。**`web-build/
+  assets/` 還沒搬進這個專案,fetch 現在一定會失敗,所以目前實際上永遠
+  走備援模式**——這段程式碼是「準備好了」,要等資產搬進來才有得測,
+  詳見 `systems/boss/README.md`。
+- **存檔系統接線**:`BossScene.jsx` 的復活流程不再是 demo 假值,真的呼叫
+  `save/loadSave()`/`writeSave()` 檢查/扣 80 點哩程(不夠會顯示「哩程
+  不足」擋下來),討伐成功也真的把哩程加回存檔(簡化版公式,拿掉了
+  `clearedStations` 乘數,因為 `BossScene` 是獨立 demo 場景沒有這個
+  脈絡)。同時修正 `config/README.md`/`save/README.md` 兩份文件跟實際
+  進度脫節已久的落差(都一直寫「尚未搬入內容」但檔案早就有完整內容)。
+- 沙箱驗證:`npm run build`(88 modules)通過,既有 8 支測試(共 239
+  項斷言,新增 `rollExtraChartNote()` 的 5 項斷言)全過回歸。
+
+**麻煩你的部分**:同上一輪的驗證項目都還適用,額外補充:
+
+5. 「BOSS 對戰場」故意送死一次,確認復活時如果哩程點數不夠(存檔剛開始
+   應該有 0 點)會顯示「哩程不足」而不能復活,只能選「重新挑戰」或
+   「我要下車」。
+6. 效能優化/chart 模式/存檔接線這三件事本身不會在畫面上有明顯視覺差異
+   (chart 模式現在一定會 fallback、效能優化是內部結構調整),只需要
+   確認整體操作起來手感跟上一輪一樣順暢、沒有新出現的當機/卡頓即可。
 
 ## 系統模組列表
 

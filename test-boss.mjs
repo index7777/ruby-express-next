@@ -208,5 +208,17 @@ function near(a, b, eps = 1e-6) { return Math.abs(a - b) < eps; }
   assert(uniqueLanes.size === bullets.length, "signal 每顆都在不同軌道");
 }
 
+// rollExtraChartNote:phase 1 永遠不插,phase 2/3 依機率/延遲不同
+{
+  const boss = createBossManager();
+  assert(boss.rollExtraChartNote(() => 0) === null, "phase 1 永遠不插額外音符");
+  boss.phase = 2;
+  assert(boss.rollExtraChartNote(() => 0.99) === null, "phase 2 rand 超過 0.3 門檻不插");
+  assert(boss.rollExtraChartNote(() => 0.1).delaySec === 0.05, "phase 2 命中時延遲 0.05s");
+  boss.phase = 3;
+  assert(boss.rollExtraChartNote(() => 0.99) === null, "phase 3 rand 超過 0.5 門檻不插");
+  assert(boss.rollExtraChartNote(() => 0.1).delaySec === 0.08, "phase 3 命中時延遲 0.08s");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

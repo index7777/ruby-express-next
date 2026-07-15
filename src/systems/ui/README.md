@@ -3,7 +3,13 @@
 搬入範圍：統一 UI 設計系統——Button / Panel / Popup / Dialog / Card / HUD /
 Progress Bar，全部共用同一套圓角、陰影、發光、動畫、字體、留白規範。
 
-## 狀態：Phase 8 完成（建立系統，尚未接線）
+## 狀態：Phase 8 完成 + 2026-07-15j 已接線
+
+- ⚠️ **接線更新**:`Button`/`ProgressBar`/`Dialog` 已經接進
+  `game/PlayScene.jsx`(離開按鈕、穩定度條)跟新增的 `game/BossScene.jsx`
+  (離開/命中回饋按鈕、BOSS·玩家 HP 條、finisher QTE/平衡對抗閘門讀出、
+  復活詢問/勝利畫面的 Dialog),不再只是 `App.jsx` 展示區塊裡的示範,
+  詳見 `game/README.md`。
 
 - **重要發現**：原本以為 `GameButton`/`styles` 是原始碼裡的孤兒引用(只有
   呼叫端、沒有定義),追查後發現其實兩者都**真的存在**——`web-build/
