@@ -22,3 +22,10 @@
   `BACKPACK_SCORE`/`NOISE_SCORE`)、震動 helper(`vibrate`)等。
 - `balanceGate.js`(Phase 9 新增):平衡對抗的共用純物理函式,見
   `src/systems/boss/README.md`/`src/systems/npc/README.md` 說明。
+- **2026-07-15 選單流程新增 `DEFAULT_LANE_KEYS`/`DEFAULT_BALANCE_KEYS`/
+  `BALANCE_DIR_LABEL`**:對照 `web-build/index.html` 2026-07-14i 那輪加的
+  電腦板自訂快捷鍵功能(那次只改了正式版,這幾個常數一直沒搬進這個重構
+  專案)。⚠️ 目前只有 `game/SettingsScene.jsx` 會讀寫這兩個設定值(存進
+  `save.settings.laneKeys`/`balanceKeys`),`PlayScene.jsx`/`BossScene.jsx`
+  的判定邏輯仍然固定讀 `KEY_TO_LANE`/方向鍵,還沒有真的改讀這兩個自訂
+  值——這是「設定寫得進去但判定還沒接線讀」的已知範圍邊界,不是遺漏。

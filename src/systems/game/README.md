@@ -247,3 +247,91 @@ React state 驅動的 game loop，React 只負責讀取 loop 狀態來 render UI
 變傷害護盾、墨鏡讓彈幕變慢、空車票瞬間清彈幕),但上一輪(15r)只顧著
 把肉鴿卡接進 `BossScene.jsx`,忘記真的把 `ItemManager` 也接進去。已補上
 四種道具的 BOSS 分支效果,詳見 `boss/README.md` 2026-07-15s 章節。
+
+## 2026-07-15u:整個選單/流程介面(App.jsx 換成真正的遊戲入口)
+
+> 使用者確認「還有什麼沒做但工作量大的」後選了「整個選單/流程介面」,
+> 分批方式選「全部一次做完」,`App.jsx` 定位選「換成真的入口」——這輪把
+> 之前只做出核心玩法場景(判定測試場/BOSS 戰/選曲/通勤路線圖)的
+> `web-build-next`,補上原始碼 `web-build/index.html` 剩下的 15 個選單/
+> 流程畫面,並把 `App.jsx` 從「搬移驗證清單」demo 頁換成真正從 splash
+> 開始、可以整場走完的選單導向遊戲入口(demo 清單整份拿掉)。
+
+**新增 `systems/game/` 檔案**(逐字對照原始碼行號,見各檔案開頭註解):
+`MenuLayout.jsx`(共用外殼:背景圖+遮罩+標題+返回按鈕,給下面大部分
+清單型畫面共用)、`SplashScene.jsx`(4162-4175)、`HubScene.jsx`
+(4184-4224)、`LobbyScene.jsx`(4357-4374)、`ModeScene.jsx`(4501-4525)、
+`SlotsScene.jsx`(4527-4572)、`BossSelectScene.jsx`(4574-4599)、
+`ArrivalScene.jsx`(5407-5552,肉鴿卡三選一到站畫面)、`CalibrateScene.jsx`
+(4477-4499)、`SettingsScene.jsx`(4376-4475)、`RecordsScene.jsx`
+(4226-4273)、`NewsScene.jsx`(4317-4334)、`LeaderboardScene.jsx`
+(4336-4355)、`VendingScene.jsx`(4275-4315)、`ResultScene.jsx`(一般結算,
+5629-5664)、`BossResultScene.jsx`(BOSS 結算,5554-5628)、
+`ResultBreakdown.jsx`(兩個結算畫面共用的判定分佈四色條,對照原始碼
+`ResultStats`)。
+
+**`PlayScene.jsx`/`BossScene.jsx` 新增的接線用 prop**(純新增,沒傳這些
+prop 時行為完全不變):
+- `onFinished(stats)`:曲目播完(`PlayScene`)/討伐成功或死亡後放棄
+  (`BossScene`)時呼叫一次,吃 `engine.getState()`(score/combo/maxCombo/
+  stability/counts 齊全)+ 額外欄位(`stationIndex`/`gameMode`/
+  `outcome`/`bossId`),給 `App.jsx` 導向 arrival/result 畫面用。
+- `initialRogueCardIds`:通勤模式在到站畫面選的肉鴿卡(對照原始碼整趟
+  通勤延續的 `runCardsRef`)現在會真的透過這個 prop 帶進下一站/終點
+  BOSS 戰,不再是每個場景各自從空清單重新開始——這是這輪額外補上的一個
+  真接線(先前 `PlayScene.jsx`/`BossScene.jsx` 各自的「🎴 抽卡demo」是
+  獨立、不延續的,現在跟 `ArrivalScene` 選的卡是同一份清單)。
+
+**`config/constants.js`/`save/save.js` 新增**:`DEFAULT_LANE_KEYS`/
+`DEFAULT_BALANCE_KEYS`/`BALANCE_DIR_LABEL`(補搬 2026-07-14i 電腦板自訂
+快捷鍵功能的常數,之前只改了正式版)+ `defaultSave().settings` 補
+`laneKeys`/`balanceKeys` 欄位,給 `SettingsScene.jsx` 用。
+
+**`App.jsx` 整個換掉**:不再是系統檢查清單 + 各系統獨立展示按鈕,改成
+用 `switch(screen)` driven 的真實流程控制器,從 `splash` 開始,串起
+`hub → lobby → mode →`(通勤:`slots → stagemap → playing → arrival →`
+下一站或終點 boss;自由:`songselect → playing → result`;BOSS 測試:
+`bossselect → boss → result`)+ hub 的 `records`/`news`/`leaderboard`/
+`settings(→calibrate)`/`vending`/練習模式。
+
+**⚠️ 刻意的範圍邊界(規模最大的一次接線,詳見各檔案開頭註解)**:
+- **到站後「繼續共GO」是回到通勤路線圖**,不是像原始碼直接無縫接下一站
+  ——省下額外的「站序自動推進」狀態管理,玩家一樣要點一次下一站,只是
+  多經過路線圖畫面一次。
+- **`ArrivalScene` 的三選一是直排清單,不是原始碼的 scroll-snap
+  carousel**(置中放大/側邊縮小/左右滑動),互動手勢改成點選,選擇邏輯
+  (排除已選卡、重抽扣 30 點、繼續前可改選)完全對照原始碼。
+- **進站補給預購(`preorder`)、道具/必殺技集氣充能沒有跨站延續**——
+  `ItemManager` 目前每次進 `PlayScene`/`BossScene` 都重新歸零,只有肉鴿
+  卡效果(`recalcRogue` 算出的加成)做到跨站延續。
+- **練習模式/BOSS 戰測試略過陀螺儀權限詢問彈窗**(`askTiltThen`)——手機
+  板體感相關功能本來就還沒實作,詳見 `HubScene.jsx`/`BossSelectScene.jsx`
+  開頭註解。
+- **自訂快捷鍵設定寫得進去但判定邏輯還沒接線讀**,見上面 config 段落。
+- **BOSS 結算畫面沒有「查看得分明細」展開區塊**——需要 `BossScene.jsx`
+  額外收集通關時間/事件分項統計,目前只有 `engine.getState()` 既有的
+  counts/maxCombo/score/stability,詳見 `BossResultScene.jsx` 開頭註解。
+- **分享成績卡(canvas 截圖)兩個結算畫面都沒有做**。
+- **`SplashScene` 沒有做原始碼獨立的 `menu` phase**(4177-4182,一個內容
+  幾乎重複的過渡畫面),`splash` 點擊直接進 `hub`。
+- 一律沒有做手機陀螺儀/傾斜輸入,詳見上方各點。
+
+**驗證**:沙箱 `npm run build`(107 modules)通過(輸出目錄 `dist/` 這次
+被 Windows 端鎖住幾個檔案沒辦法 `rimraf`,改用 `--outDir` 指向沙箱暫存
+路徑驗證編譯結果,純粹是沙箱環境的檔案鎖問題,不是程式碼有錯——本機
+`npm run dev`/`npm run build` 應該不會遇到這個);既有 10 支測試(330
+項斷言)全數回歸通過。**這輪新增的畫面全部是 `.jsx` 檔案,沒有對應的
+node 測試腳本能驗證「真的能不能玩」,完全沒有經過瀏覽器實測**,尤其
+下面這幾點要重點確認:
+- 從 splash 點「開始通勤」整路走到 hub,7 個設施卡片都能正常進入對應
+  畫面,返回按鈕都能正常回到上一頁。
+- 通勤模式整路走一次:mode → slots(選一格)→ stagemap(選第 1 站)→
+  playing(打完一首)→ arrival(選一張肉鴿卡,或按重抽)→ 繼續共GO →
+  回到 stagemap 確認第 1 站打勾、第 2 站解鎖。
+- 自由模式:mode → songselect → playing → result → 重新挑戰/回月台。
+- BOSS 戰測試:mode → bossselect → boss → 打贏/打輸都能正確進
+  `BossResultScene`,「回月台」能回到 hub。
+- 行控中心:調音量/開關/自訂快捷鍵(綁鍵、Esc 取消、重複鍵擋下、重設
+  預設)、進即時校準點「打!」幾次套用 offset、改名、清除存檔。
+- 乘車紀錄/旅客資訊/營運看板/自動販賣機(哩程不足擋下購買、預購後按鈕
+  變已預購)。

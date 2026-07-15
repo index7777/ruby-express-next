@@ -1,5 +1,7 @@
 // 搬自 web-build/index.html 第 181-235 行左右(本地存檔 localStorage)。
 // 逐字保留邏輯,行為不變。
+import { DEFAULT_LANE_KEYS, DEFAULT_BALANCE_KEYS } from "../config/constants.js";
+
 export const SAVE_KEY = "rubyexpress.save.v1";
 
 export function emptyRuby() {
@@ -13,7 +15,10 @@ export function emptySlot() {
 export function defaultSave() {
   return {
     playerName: "",
-    settings: { volume: 0.8, tilt: true, vibrate: true, offsetMs: 0, balanceInput: "tilt", danmakuOff: false },
+    settings: {
+      volume: 0.8, tilt: true, vibrate: true, offsetMs: 0, balanceInput: "tilt", danmakuOff: false,
+      laneKeys: DEFAULT_LANE_KEYS.slice(), balanceKeys: { ...DEFAULT_BALANCE_KEYS },
+    },
     best: { score: 0, maxCombo: 0, accuracy: 0 },
     routes: { ruby: emptyRuby() },
     slots: [emptySlot(), emptySlot(), emptySlot()],   // #3 三存檔格(各自通勤進度 + 肉鴿卡)

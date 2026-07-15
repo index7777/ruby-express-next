@@ -11,6 +11,18 @@ export const LANES = [
 ];
 export const KEY_TO_LANE = { d: 0, f: 1, j: 2, k: 3, l: 4 };
 
+// 自訂快捷鍵(逐字對照 `web-build/index.html` 2026-07-14i 那輪加的電腦板
+// 自訂快捷鍵功能——那次只改了正式版 `web-build/index.html`,`laneKeys`/
+// `balanceKeys` 一直沒搬進這個重構專案,這次做行控中心設定頁時一併補上
+// 這幾個常數。⚠️ 目前只有 SettingsScene 會寫入/顯示這兩個設定值,
+// `PlayScene.jsx`/`BossScene.jsx` 判定邏輯仍然固定讀 `KEY_TO_LANE`/方向鍵,
+// 還沒有真的改讀 `save.settings.laneKeys`/`balanceKeys`——這個「設定寫得進
+// 去但判定還沒接線讀」的職責邊界跟這個專案其他「系統先建好,之後才接線」
+// 的模式一致,見 `game/README.md`。
+export const DEFAULT_LANE_KEYS = ["d", "f", "j", "k", "l"];
+export const DEFAULT_BALANCE_KEYS = { forward: "ArrowUp", backward: "ArrowDown", left: "ArrowLeft", right: "ArrowRight" };
+export const BALANCE_DIR_LABEL = { forward: "前傾", backward: "後仰", left: "向左", right: "向右" };
+
 export const BASE_BPM = 100;
 export const BEAT_SEC = 60 / BASE_BPM;
 export const APPROACH_SEC = 1.3;

@@ -1,5 +1,14 @@
 # save
 
+## 2026-07-15 選單流程新增:`settings.laneKeys`/`balanceKeys` 預設值
+
+`defaultSave().settings` 補上 `laneKeys`(預設 `DEFAULT_LANE_KEYS`)/
+`balanceKeys`(預設 `DEFAULT_BALANCE_KEYS`,兩個常數搬自
+`config/constants.js`,見該檔案 README 說明),給新增的
+`game/SettingsScene.jsx` 自訂快捷鍵功能用。`loadSave()` 既有的
+`out.settings = { ...d.settings, ...(s.settings||{}) }` 合併邏輯不用改,
+舊存檔(沒有這兩個欄位)載入時會自動補上預設值。
+
 搬入範圍：`localStorage` 存檔邏輯（key: `rubyexpress.save.v1`）——暱稱、設定、
 全域最佳、每站/BOSS 進度、成就、每日任務、統計等的讀取/寫入/預設值合併
 （`loadSave`/`writeSave` 這類函式）。

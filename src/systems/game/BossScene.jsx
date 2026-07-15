@@ -54,7 +54,18 @@ function laneCenterPercent(lane) {
 }
 const LABEL_TO_FX = { PERFECT: "perfect", GREAT: "great", GOOD: "good", MISS: "miss" };
 
-export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "redline" }) {
+// onFinished(2026-07-15 選單流程接線新增):可選 callback。討伐成功時呼叫
+// 一次(`{ ...engine.getState(), outcome:"win", bossId }`);玩家死亡後在
+// 復活詢問卡片選「我要下車」放棄挑戰時也會呼叫(`outcome:"lose"`)——兩種
+// 情況都給外層(App.jsx 選單流程)導向 BossResultScene 用。純新增,沒傳這個
+// prop 時行為完全不變(仍是原本場景內建的「討伐成功」Dialog / onExit)。
+// initialRogueCardIds(2026-07-15 選單流程接線新增):通勤模式全程累積的
+// 肉鴿卡(對照原始碼整趟通勤結束後帶進終點 BOSS 戰的 `runCardsRef`),
+// App.jsx 進 BOSS 戰時傳進來,這個場景只有 `finalsprint` 卡的
+// `bossDmgMult` 真的有作用(其餘欄位在 BOSS 戰沒有對應的呼叫端,見
+// `judge/README.md` 2026-07-15r 章節),沒傳(BOSS 戰測試/舊呼叫端)就
+// 維持原本從預設值開始的行為。
+export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "redline", onFinished, initialRogueCardIds }) {
   const [bossHp, setBossHp] = useState(100);
   const [playerHp, setPlayerHp] = useState(100);
   const [phase, setPhase] = useState(1);
@@ -62,9 +73,9 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
   const [notice, setNotice] = useState("");
   const [outcome, setOutcome] = useState(null); // null | "win" | "lose"
   const [reviveAsk, setReviveAsk] = useState(false);
-  const [rogueCardIds, setRogueCardIds] = useState([]);
+  const [rogueCardIds, setRogueCardIds] = useState(initialRogueCardIds || []);
   const [rogueOffer, setRogueOffer] = useState(null);
-  const rogueRef = useRef(createDefaultRogue()); // 目前只有 finalsprint 卡的 bossDmgMult 在這個場景有作用
+  const rogueRef = useRef(recalcRogue(initialRogueCardIds || [])); // 目前只有 finalsprint 卡的 bossDmgMult 在這個場景有作用
   // 每幀都會變的畫面資料(彈幕位置/QTE 進度/鏡頭震動)收在這裡,不是 React
   // state,渲染時直接讀 `viewRef.current.xxx`,只靠 `renderTick` 這一顆
   // state 觸發重繪——跟 `PlayScene.jsx`/`ParticleLayer.jsx` 同樣的模式,
@@ -382,6 +393,7 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
         save.stats.bossKills = (save.stats.bossKills || 0) + 1;
         writeSave(save);
         showNotice(`🎉 討伐成功 · 哩程 +${pts}`);
+        if (onFinished) onFinished({ ...engineRef.current.getState(), outcome: "win", bossId });
       }
 
       const camState = camera.getState(now);
@@ -628,7 +640,7 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
         <>
           <Button variant="primary" onClick={doRevive}>復活接關(demo)</Button>
           <Button variant="secondary" onClick={doRetry}>重新挑戰</Button>
-          <Button variant="ghost" onClick={onExit}>我要下車</Button>
+          <Button variant="ghost" onClick={() => (onFinished ? onFinished({ ...engineRef.current.getState(), outcome: "lose", bossId }) : onExit())}>我要下車</Button>
         </>
       }>
         <div style={{ fontSize: 13, color: "#C0C8D0", textAlign: "left", width: "100%" }}>

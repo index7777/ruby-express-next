@@ -74,7 +74,12 @@ function laneCenterPercent(lane) {
 // (雙軌/炸彈/雜訊專用,這個場景不會出現)一律 fallback 成 "glow"。
 const LABEL_TO_FX = { PERFECT: "perfect", GREAT: "great", GOOD: "good", MISS: "miss" };
 
-export default function PlayScene({ audio, fx, shake, camera, onExit, track, stationIndex }) {
+// onFinished(2026-07-15 選單流程接線新增):可選 callback,曲目/備援節奏
+//播完時呼叫一次,吃 `engine.getState()`(score/combo/maxCombo/stability/
+// counts 齊全,不用另外用 ref 鏡像一份怕 stale closure)+ `stationIndex`/
+// `gameMode`,給外層(App.jsx 的選單流程)導向 ResultScene 用。純新增,
+// 不影響原本沒傳這個 prop 時的行為(畫面下方仍會顯示原本那行 `ended` 文字)。
+export default function PlayScene({ audio, fx, shake, camera, onExit, track, stationIndex, gameMode, onFinished, initialRogueCardIds }) {
   const [score, setScore] = useState(0);
   const [combo, setCombo] = useState(0);
   const [maxCombo, setMaxCombo] = useState(0);
@@ -82,7 +87,12 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
   const [counts, setCounts] = useState({ perfect: 0, great: 0, good: 0, miss: 0 });
   const [imbalanceActive, setImbalanceActive] = useState(false);
   const [ended, setEnded] = useState(false);
-  const [rogueCardIds, setRogueCardIds] = useState([]);
+  // initialRogueCardIds(2026-07-15 選單流程接線新增):通勤模式在到站畫面
+  // (ArrivalScene)選的肉鴿卡,對照原始碼 `runCardsRef`/`slot.run.cards`
+  // 整趟通勤累積延續,呼叫端(App.jsx)進下一站時把已選卡 id 傳進來,這裡
+  // 用它初始化 `rogueCardIds`/`rogueRef`,不是每站都從空清單重新開始。
+  // 沒傳(自由模式/練習模式/舊呼叫端)就維持原本從空清單開始的行為。
+  const [rogueCardIds, setRogueCardIds] = useState(initialRogueCardIds || []);
   const [rogueOffer, setRogueOffer] = useState(null); // 抽卡 demo:目前待選的 3 張卡,null=沒在選卡
   const [notice, setNotice] = useState("");
   // 每幀都會變的畫面資料收在這裡(不是 React state),渲染時直接讀
@@ -114,7 +124,10 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
   if (!npcRef.current) npcRef.current = createNpcManager();
   const itemsRef = useRef(null);
   if (!itemsRef.current) itemsRef.current = createItemManager();
-  const rogueRef = useRef(createDefaultRogue()); // 目前已選卡片重新算出的 rogue 狀態,同步餵給 engine.setRogue()
+  // 目前已選卡片重新算出的 rogue 狀態,同步餵給 engine.setRogue()——用
+  // `initialRogueCardIds`(見上方 prop 註解)算初始值,不是每次都從預設值
+  // 開始,這樣通勤模式延續前幾站選的卡才會真的在下一站生效。
+  const rogueRef = useRef(recalcRogue(initialRogueCardIds || []));
 
   const showNotice = (text, durationMs = 1600) => {
     setNotice(text);
@@ -282,6 +295,9 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
         }, delay);
       },
     });
+    // 引擎剛建立時就把(可能非空的)初始 rogue 狀態餵進去,不用等玩家在
+    // 這個場景裡重新抽一次卡才生效,對照上面 `rogueRef` 的初始值註解。
+    engineRef.current.setRogue(rogueRef.current);
   }
 
   // 2026-07-15l 接線:有給 `track.chart` 就嘗試載入真正的譜面,拿到後
@@ -499,6 +515,7 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
           save.stats.plays = (save.stats.plays || 0) + 1;
           writeSave(save);
         }
+        if (onFinished) onFinished({ ...engineRef.current.getState(), stationIndex, gameMode });
         return; // 不再排下一幀,徹底停掉 tick 迴圈
       }
       rafRef.current = requestAnimationFrame(tick);
