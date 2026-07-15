@@ -533,6 +533,21 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
     winHandledRef.current = false;
     engineRef.current.setBossCombo(0);
     engineRef.current.reset();
+    // ⚠️ 修正:「重新挑戰道具沒有回到初始狀態」「必殺技量值不對」——原始碼
+    // `retryBoss()` 刻意設 `keepItemsRef.current = true`,讓道具充能/必殺
+    // 集氣「延續」死亡當下的殘留值,不重置(那是為了保護玩家整趟通勤累積
+    // 的道具/肉鴿卡投資,原始碼註解明講這是修過的規格,不是疏漏)。但
+    // `web-build-next` 這個場景的道具充能/必殺集氣本來就已經是「每次進場
+    // 各自從預設值重新開始,不像原始碼一樣跨站延續」(見 `App.jsx` 開頭
+    // 註解、`game/README.md` 2026-07-15u 章節的刻意範圍邊界),BOSS/engine
+    // 這幾行也都是整套重置回初始值——「重新挑戰」在這個場景裡只有道具這
+    // 一塊沒有跟著一起重置,變成道具充能/必殺技集氣量沿用上一輪死亡當下
+    // 的殘留數字(可能是打到一半用掉的充能次數、打到一半集到的必殺百分比,
+    // 甚至剛好滿了但還沒按),使用者實測看到的「量值不對」就是這個殘留值
+    // 造成的,不是計算錯誤。這裡補上 `itemsRef.current.reset()`,讓道具跟
+    // 必殺技集氣也跟 BOSS/分數/連段一樣真的回到初始狀態,呼應這個場景本來
+    // 就選的「不做跨站道具延續」簡化決定。
+    itemsRef.current.reset();
     setOutcome(null); setReviveAsk(false); setScore(0);
     setBossHp(100); setPlayerHp(100); setPhase(1);
   };
