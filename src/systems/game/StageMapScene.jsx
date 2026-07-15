@@ -11,9 +11,19 @@
 //   `PlayScene.jsx` 本來就寫明的範圍邊界:沒有肉鴿卡/道具/平衡對抗)。
 // - 沒有顯示路線圖的視覺化站點連線/BOSS 站(原始碼在最後一站之後還有
 //   BOSS 對戰入口),這裡只列 5 站,BOSS 對戰場另外從 `App.jsx` 直接進。
+//
+// ── 2026-07-16 接線(A 類:視覺/美術套用)──
+// 背景改用 `ART.stagemapBg`(缺檔就退回 `ART.lobbyBg`,對照 `art.js` 開頭
+// 註解本來就寫的 fallback 規則),對照 `MenuLayout.jsx` 既有的「絕對定位
+// 滿版 backgroundImage + 深色漸層疊層」寫法。`ART.routeMap`(捷運路網圖)
+// 盤點時找不到清楚的「對應到哪個具體 UI 元素」——不是每一站都有自己的
+// 路網子圖,這張圖是整條線的全覽圖——所以刻意只當成清單上方的裝飾性小
+// 橫幅使用(半透明,不影響下面站點清單的可讀性),不去猜哪一站對應圖上
+// 哪個位置,避免瞎套用出錯誤的資訊。
 import { Button, Card } from "../ui/index.js";
 import { STATION_NAMES, STATION_EN, REDLINE_TRACKS } from "../data/index.js";
 import { loadSave, isStationUnlocked } from "../save/index.js";
+import { ART } from "../assets/index.js";
 
 export default function StageMapScene({ onSelectStation, onBack }) {
   const save = loadSave();
@@ -21,16 +31,20 @@ export default function StageMapScene({ onSelectStation, onBack }) {
 
   return (
     <div style={{
-      minHeight: "100vh", background: "#0B0D10", color: "#8FE0FF",
+      minHeight: "100vh", position: "relative", background: "#0B0D10", color: "#8FE0FF",
       fontFamily: "-apple-system, system-ui, sans-serif", padding: 20,
       display: "flex", flexDirection: "column", alignItems: "center",
     }}>
-      <div style={{ width: "100%", maxWidth: 420 }}>
+      <div style={{ position: "absolute", inset: 0, backgroundImage: `url(${ART.stagemapBg})`, backgroundSize: "cover", backgroundPosition: "center" }} />
+      <div style={{ position: "absolute", inset: 0, background: "linear-gradient(rgba(11,13,16,0.6), rgba(11,13,16,0.9))" }} />
+      <div style={{ position: "relative", width: "100%", maxWidth: 420 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
           <div style={{ fontSize: 18, fontWeight: 700 }}>紅寶線 · 通勤路線圖</div>
           <Button variant="ghost" onClick={onBack}>返回</Button>
         </div>
         <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 14 }}>Ruby Line</div>
+
+        <img src={ART.routeMap} alt="" style={{ width: "100%", borderRadius: 10, opacity: 0.5, marginBottom: 14 }} />
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {STATION_NAMES.map((name, i) => {

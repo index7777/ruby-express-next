@@ -29,7 +29,16 @@ export const ART = {
   bossSignal:   "assets/boss-atk-signal.png",  // BOSS 攻擊:訊號干擾符號(去背,當干擾彈幕落下)
   bossSpit:     "assets/boss-atk-spit.png",    // BOSS 攻擊:口水噴濺(半透明潑濺,鋪滿視線)
   bossCase:     "assets/boss-atk-case.png",    // BOSS 攻擊:公事包(強制長按事件圖示,去背)
-  bossBullet:   "assets/boss-bullet.png",     // BOSS 彈幕素材（洋紅底，載入時即時去背）
+  // BOSS 彈幕素材。⚠️ 2026-07-16 查證更新:這行原本的註解寫「洋紅底,
+  // 載入時即時去背」,聽起來像需要額外寫 canvas 去背邏輯才能用——實際
+  // 用 Pillow 檢查過檔案本體的 alpha channel,四個角落已經是完全透明
+  // (`(0,0,0,0)`),彈幕本體是不透明青色,沒有殘留洋紅色邊緣。也就是
+  // 這批素材在搬進 `public/assets/` 之前就已經處理過去背(對照
+  // `assets/README.md` 提到「4 個 `.magenta-backup` 殘留檔沒有搬」——
+  // 那些才是去背前的原始檔,真正搬進來的這幾張早就是成品),這裡的舊
+  // 註解描述的是「原始素材的狀態」,不是「現在這個檔案的狀態」,不用
+  // 額外寫任何去背程式碼,直接 `<img src={ART.bossBullet}>` 就能用。
+  bossBullet:   "assets/boss-bullet.png",
   bossPhaseAlert: "assets/boss-phase-alert.png", // BOSS 階段轉場警示圖騰(透明底;P2/P3 切換瞬間短暫疊圖,配合 bossIntroRedFlash 手法)
   stagemapBg:   "assets/stagemap-bg.png",    // 通勤選站背景（缺檔退回 lobbyBg）
   ledPanelTex:  "assets/led-panel-tex.png",  // LED 點陣面板紋理疊層(缺檔則用純 CSS 點陣網格 fallback,不影響顯示)
@@ -51,3 +60,14 @@ export const ART = {
   hudCorner: "assets/hud-frame-corner.png", // HUD 面板邊框裝飾角標(左上角圖,CSS 鏡射出其餘三角)
   rankBadge: { S: "assets/rank-badge-s.png", A: "assets/rank-badge-a.png", B: "assets/rank-badge-b.png", C: "assets/rank-badge-c.png" }, // 結算評級勳章
 };
+
+// cardArt(id)——2026-07-16 補上(A 類接線):`public/assets/` 有 19 張
+// `card-*.png` 肉鴿卡插圖,檔名跟 `data/rogue.js` 的 `ROGUE_CARDS[].id`
+// 逐字對應(例如 `card-monthlypass.png`),但這批素材之前完全沒有進
+// `ART` 這張 manifest——`PlayScene.jsx`/`BossScene.jsx` 的抽卡 Dialog
+// 從頭到尾都只有 `card.icon` emoji,插圖檔案等於是孤兒檔案,沒有任何
+// 呼叫端讀得到。用函式而不是固定物件,因為 19 個 id 都是同一種命名規則
+// (`assets/card-${id}.png`),沒有必要窮舉列成 19 個欄位。
+export function cardArt(id) {
+  return `assets/card-${id}.png`;
+}

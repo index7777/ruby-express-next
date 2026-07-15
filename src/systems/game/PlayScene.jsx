@@ -41,8 +41,8 @@
 // `systems/game/README.md`「這次刻意沒做的部分」。
 import { useEffect, useRef, useState } from "react";
 import {
-  LANES, KEY_TO_LANE, WINDOW_GOOD, APPROACH_SEC, FALL_DISTANCE,
-  laneLeftExpr, laneWidthExpr, JUDGE_LABEL, ITEM_DEFS, vibrate,
+  LANES, KEY_TO_LANE, WINDOW_GOOD, APPROACH_SEC, FALL_DISTANCE, LANE_GAP_PX,
+  JUDGE_LABEL, ITEM_DEFS, vibrate,
   DEFAULT_LANE_KEYS, DEFAULT_BALANCE_KEYS, OPP_DIR,
   createBalanceGate, advanceBalanceGate,
 } from "../config/index.js";
@@ -62,7 +62,7 @@ import {
 import { createNpcManager } from "../npc/index.js";
 import { loadSave, writeSave } from "../save/index.js";
 import { evalRun } from "../data/index.js";
-import { ART } from "../assets/index.js";
+import { ART, cardArt } from "../assets/index.js";
 import { Button, Card, Dialog, ProgressBar } from "../ui/index.js";
 
 const CHART_CYCLES = 6; // 16 步/cycle * BEAT_SEC(0.6s) ≈ 9.6 秒/cycle,約 1 分鐘的備援節奏
@@ -102,7 +102,7 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
   const [notice, setNotice] = useState("");
   // 每幀都會變的畫面資料收在這裡(不是 React state),渲染時直接讀
   // `viewRef.current.xxx`,只靠 `renderTick` 這一顆 state 觸發重繪。
-  const viewRef = useRef({ notes: [], bombs: [], noise: [], npcs: [], cameraStyle: {}, shakeStyle: {}, items: null, balanceUi: null });
+  const viewRef = useRef({ npcs: [], cameraStyle: {}, shakeStyle: {}, items: null, balanceUi: null });
   const [, setRenderTick] = useState(0);
   const bumpRender = () => setRenderTick((t) => (t + 1) % 1000000);
 
@@ -163,6 +163,104 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
   const turnNextRef = useRef(20000 + Math.random() * 14000);
   const heldDirRef = useRef(null);
   const lastFrameAtRef = useRef(0); // 給平衡對抗物理算 deltaMs 用(對照 BossScene.jsx 同名 ref)
+
+  // canvasRef/imgCacheRef/canvasSizeRef(D 類接線,2026-07-16):把「軌道
+  // 底色/音符/炸彈/雜訊」這塊——原本每幀用 `viewRef.current.notes/bombs/
+  // noise` 餵給 JSX `.map()`,每一顆都是一個真的 React DOM 節點,60fps
+  // 判定場常態同時有 10+ 顆在畫面上,等於每秒讓 React 重新 diff 幾百個
+  // 節點——改成一張 `<canvas>` 每幀直接畫,不再產生任何 DOM 節點。這是
+  // `systems/game/README.md`「這次刻意沒做的部分」點名的「game loop 完全
+  // 脫離 React render」架構債的第一個實質切片,範圍刻意只框在這塊(React
+  // 每幀重繪負擔最大的地方);鏡頭/震動 transform、Particle/Lighting/
+  // FxLayer、HUD 面板都維持原樣不動,那些本來就是「一個 style 物件」或
+  // 「各自獨立的既有系統」,不是這次要處理的負擔來源,見下面 `drawField()`。
+  const canvasRef = useRef(null);
+  const imgCacheRef = useRef({});
+  const canvasSizeRef = useRef({ w: 0, h: 0 });
+  const getImg = (src) => {
+    if (!src) return null;
+    let img = imgCacheRef.current[src];
+    if (!img) { img = new Image(); img.src = src; imgCacheRef.current[src] = img; }
+    return img;
+  };
+  // drawField():逐一還原原本 JSX 版本的視覺(色塊/發光陰影/圖片疊圖),
+  // 只是渲染手法換成 canvas 2D API,判定邏輯/資料來源(notesRef/npcRef)
+  // 完全不變——跟原本一樣「圖片沒載入好就只顯示色塊/發光」當後備,不會
+  // 因為圖片還沒下載完就整顆消失看不到判定位置。canvas 沒有 CSS
+  // `backgroundBlendMode:"overlay"` 的一比一等價寫法,底紋疊圖這裡簡化
+  // 成降低透明度疊加,視覺效果接近但不是逐 pixel 相同,可接受的近似。
+  const drawField = (w, h) => {
+    const canvas = canvasRef.current;
+    if (!canvas || w <= 0 || h <= 0) return;
+    if (canvasSizeRef.current.w !== w || canvasSizeRef.current.h !== h) {
+      canvas.width = w; canvas.height = h;
+      canvasSizeRef.current = { w, h };
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, w, h);
+    const laneW = (w - LANE_GAP_PX * (LANES.length - 1)) / LANES.length;
+    const laneX = (i) => i * (laneW + LANE_GAP_PX);
+
+    LANES.forEach((lane, i) => {
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = lane.track;
+      ctx.fillRect(laneX(i), 0, laneW, h);
+      const tex = getImg(ART.laneTrack);
+      if (tex.complete && tex.naturalWidth > 0) {
+        ctx.globalAlpha = 0.2;
+        ctx.drawImage(tex, laneX(i), 0, laneW, h);
+      }
+    });
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillRect(0, FALL_DISTANCE, w, 2);
+    ctx.globalAlpha = 1;
+
+    const glowCircle = (cx, cy, r, color, glow) => {
+      ctx.save(); ctx.shadowColor = glow; ctx.shadowBlur = 10;
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    };
+    const glowRect = (x, y, rw, rh, r, color, glow) => {
+      ctx.save(); ctx.shadowColor = glow; ctx.shadowBlur = 10;
+      ctx.fillStyle = color;
+      if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(x, y, rw, rh, r); ctx.fill(); }
+      else ctx.fillRect(x, y, rw, rh);
+      ctx.restore();
+    };
+
+    for (const n of notesRef.current) {
+      const progress = Math.max(0, Math.min(1.05, 1 - (n.hitTime - beatClockRef.current) / APPROACH_SEC));
+      const top = progress * FALL_DISTANCE;
+      const laneDef = LANES[n.lane];
+      if (n.kind === "double") {
+        const boxLeft = laneX(n.lane), boxW = laneW * 2;
+        const innerW = boxW * 0.8, x = boxLeft + (boxW - innerW) / 2, y = top, h2 = 26;
+        glowRect(x, y, innerW, h2, 6, "#FFD43B", "#FFD43B");
+        const img = getImg(ART.noteDouble);
+        if (img.complete && img.naturalWidth > 0) ctx.drawImage(img, x, y, innerW, h2);
+      } else {
+        const cx = laneX(n.lane) + laneW / 2, cy = top + 13;
+        if (laneDef.shape === "circle") glowCircle(cx, cy, 13, laneDef.note, laneDef.glow);
+        else glowRect(cx - 13, cy - 13, 26, 26, 6, laneDef.note, laneDef.glow);
+        const img = getImg(ART.note[laneDef.key]);
+        if (img.complete && img.naturalWidth > 0) ctx.drawImage(img, cx - 13, cy - 13, 26, 26);
+      }
+    }
+    for (const b of npcRef.current.bombs) {
+      const progress = Math.max(0, Math.min(1.05, 1 - (b.hitTime - beatClockRef.current) / APPROACH_SEC));
+      const cx = laneX(b.lane) + laneW / 2, cy = progress * FALL_DISTANCE + 12;
+      const img = getImg(ART.bomb);
+      if (img.complete && img.naturalWidth > 0) ctx.drawImage(img, cx - 12, cy - 12, 24, 24);
+    }
+    for (const n of npcRef.current.noise) {
+      const progress = Math.max(0, Math.min(1.05, 1 - (n.hitTime - beatClockRef.current) / APPROACH_SEC));
+      const cx = laneX(n.lane) + laneW / 2, cy = progress * FALL_DISTANCE + 10;
+      const img = getImg(ART.noise);
+      if (img.complete && img.naturalWidth > 0) { ctx.globalAlpha = 0.85; ctx.drawImage(img, cx - 10, cy - 10, 20, 20); ctx.globalAlpha = 1; }
+    }
+  };
 
   const particleRef = useRef(null);
   if (!particleRef.current) particleRef.current = createParticleManager();
@@ -698,9 +796,11 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
       const camState = camera.getState(now);
       const { x: sx, y: sy, rotate } = shake.getOffset(now);
       const view = viewRef.current;
-      view.notes = notesRef.current;
-      view.bombs = npc.bombs;
-      view.noise = npc.noise;
+      // D 類接線:notes/bombs/noise 不再放進 viewRef 給 JSX 讀——canvas
+      // 版的 `drawField()` 直接讀 `notesRef.current`/`npcRef.current.bombs`/
+      // `.noise`(見上方定義),JSX 已經沒有任何地方在用這三個欄位了。
+      const fieldRect = fieldBoxRef.current?.getBoundingClientRect();
+      if (fieldRect) drawField(fieldRect.width, FALL_DISTANCE + 40);
       view.npcs = npc.active.map((n) => ({ id: n.id, type: n.type, remainMs: Math.max(0, n.durationMs - (now - n.bornAt)) }));
       view.balanceUi = balanceUiNext;
       view.cameraStyle = { transform: `scale(${camState.zoom}) translate(${camState.x}px, ${camState.y}px)` };
@@ -849,62 +949,12 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
           overflow: "hidden", ...viewRef.current.shakeStyle,
         }}>
           <div style={{ position: "absolute", inset: 0, ...viewRef.current.cameraStyle }}>
-            {/* A 類接線(2026-07-16):五軌底紋素材(`ART.laneTrack`)疊在
-                原本的純色軌道上(backgroundBlendMode 混色,不是取代——保留
-                原本的 per-lane 顏色區分,素材只是加一層紋理質感)。 */}
-            {LANES.map((lane, i) => (
-              <div key={lane.key} style={{
-                position: "absolute", top: 0, bottom: 0,
-                left: `calc(${laneLeftExpr(i)})`, width: `calc(${laneWidthExpr})`,
-                background: lane.track, opacity: 0.35,
-                backgroundImage: `url(${ART.laneTrack})`, backgroundSize: "cover", backgroundBlendMode: "overlay",
-                borderLeft: "1px solid rgba(255,255,255,0.08)",
-              }} />
-            ))}
-            {/* 判定線 */}
-            <div style={{ position: "absolute", left: 0, right: 0, top: FALL_DISTANCE, height: 2, background: "#FFFFFF", opacity: 0.5 }} />
-            {/* A 類接線:音符改用 `ART.note.{kick,hihat,snare,tom,crash}`/
-                `ART.noteDouble` 真的圖片,不是純色塊——保留原本的
-                boxShadow 發光當作沒素材時的視覺後備(圖片載入失敗也還有
-                色塊輪廓,不會整個消失看不到判定位置)。 */}
-            {viewRef.current.notes.map((n) => {
-              const progress = Math.max(0, Math.min(1.05, 1 - (n.hitTime - beatClockRef.current) / APPROACH_SEC));
-              const laneDef = LANES[n.lane];
-              const isDouble = n.kind === "double";
-              return (
-                <div key={n.id} style={{
-                  position: "absolute",
-                  left: `calc(${laneLeftExpr(n.lane)})`,
-                  width: isDouble ? `calc(2 * ${laneWidthExpr})` : `calc(${laneWidthExpr})`,
-                  top: progress * FALL_DISTANCE,
-                  display: "flex", justifyContent: "center",
-                }}>
-                  <div style={{
-                    width: isDouble ? "80%" : 26, height: 26, borderRadius: isDouble ? 6 : (laneDef.shape === "circle" ? "50%" : 6),
-                    background: isDouble ? "#FFD43B" : laneDef.note,
-                    backgroundImage: `url(${isDouble ? ART.noteDouble : ART.note[laneDef.key]})`,
-                    backgroundSize: "contain", backgroundPosition: "center", backgroundRepeat: "no-repeat",
-                    boxShadow: `0 0 10px ${isDouble ? "#FFD43B" : laneDef.glow}`,
-                  }} />
-                </div>
-              );
-            })}
-            {viewRef.current.bombs.map((b) => (
-              <div key={b.id} style={{
-                position: "absolute",
-                left: `calc(${laneLeftExpr(b.lane)})`, width: `calc(${laneWidthExpr})`,
-                top: Math.max(0, Math.min(1.05, 1 - (b.hitTime - beatClockRef.current) / APPROACH_SEC)) * FALL_DISTANCE,
-                display: "flex", justifyContent: "center",
-              }}><img src={ART.bomb} alt="炸彈" style={{ width: 24, height: 24 }} /></div>
-            ))}
-            {viewRef.current.noise.map((n) => (
-              <div key={n.id} style={{
-                position: "absolute",
-                left: `calc(${laneLeftExpr(n.lane)})`, width: `calc(${laneWidthExpr})`,
-                top: Math.max(0, Math.min(1.05, 1 - (n.hitTime - beatClockRef.current) / APPROACH_SEC)) * FALL_DISTANCE,
-                display: "flex", justifyContent: "center", opacity: 0.85,
-              }}><img src={ART.noise} alt="雜訊" style={{ width: 20, height: 20 }} /></div>
-            ))}
+            {/* D 類接線(2026-07-16):軌道底色/底紋/音符/炸彈/雜訊全部收進
+                這一張 canvas,每幀由 `drawField()` 直接畫(見上方定義),
+                不再是每顆音符一個 React DOM 節點——這是「game loop 完全
+                脫離 React render」架構債的第一個實質切片,見上方 canvas
+                相關 ref 開頭的完整說明。 */}
+            <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} />
           </div>
           <LightingLayer lighting={lightingRef.current} style={{ position: "absolute", inset: 0 }} />
           <ParticleLayer pm={particleRef.current} style={{ position: "absolute", inset: 0 }} />
@@ -962,10 +1012,16 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
 
       <Dialog open={!!rogueOffer} title="🎴 抽到 3 張肉鴿卡(demo)">
         <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
+          {/* A 類接線(2026-07-16):卡片插圖(`cardArt(card.id)`)取代純
+              emoji——`public/assets/` 早就有 19 張 `card-*.png`,只是
+              `art.js` 之前完全沒有收錄入口,見 `cardArt()` 開頭註解。 */}
           {(rogueOffer || []).map((card) => (
-            <Card key={card.id} onClick={() => pickRogue(card)} style={{ flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
-              <div style={{ fontSize: 14, fontWeight: 700 }}>{card.icon} {card.name}{card.type === "deal" ? " (惡魔交易)" : ""}</div>
-              <div style={{ fontSize: 12, opacity: 0.8 }}>{card.desc}</div>
+            <Card key={card.id} onClick={() => pickRogue(card)} style={{ gap: 8 }}>
+              <img src={cardArt(card.id)} alt={card.name} style={{ width: 40, height: 40, borderRadius: 6, flexShrink: 0 }} />
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{card.icon} {card.name}{card.type === "deal" ? " (惡魔交易)" : ""}</div>
+                <div style={{ fontSize: 12, opacity: 0.8 }}>{card.desc}</div>
+              </div>
             </Card>
           ))}
         </div>

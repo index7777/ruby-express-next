@@ -31,8 +31,8 @@
 // ⚠️ 完全沒有經過瀏覽器實測。
 import { useEffect, useRef, useState } from "react";
 import {
-  LANES, KEY_TO_LANE, WINDOW_GOOD, APPROACH_SEC, FALL_DISTANCE, ITEM_DEFS, EXPRESS_NEED,
-  laneLeftExpr, laneWidthExpr, OPP_DIR, vibrate,
+  LANES, KEY_TO_LANE, WINDOW_GOOD, APPROACH_SEC, FALL_DISTANCE, LANE_GAP_PX, ITEM_DEFS, EXPRESS_NEED,
+  OPP_DIR, vibrate,
   DEFAULT_LANE_KEYS, DEFAULT_BALANCE_KEYS,
 } from "../config/index.js";
 import { createGameEngine } from "../judge/gameEngine.js";
@@ -48,7 +48,7 @@ import { createBossManager } from "../boss/index.js";
 import { createDefaultRogue, recalcRogue, rollArrivalCards, accRank } from "../judge/index.js";
 import { loadSave, writeSave } from "../save/index.js";
 import { BOSSES, evalRun } from "../data/index.js";
-import { ART } from "../assets/index.js";
+import { ART, cardArt } from "../assets/index.js";
 import { Button, Card, ProgressBar, Dialog } from "../ui/index.js";
 
 const REVIVE_COST = 80; // 對照原始碼 confirmRevive() 的哩程扣點數
@@ -94,6 +94,13 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
   // 倍率,拿來決定討伐成功對話框的淡入時長(見下面 win 判定區塊/Dialog),
   // 讓 `timeScale` 這個原本只算出來沒人讀的數字真的產生視覺效果。
   const [winTimeScale, setWinTimeScale] = useState(1);
+  // portraitBroken(A 類接線,2026-07-16):`yaksha` 目前缺 P1/P2/P3/開場
+  // 立繪檔案(見上方 `bossDef` 註解),`<img>` 載入失敗時瀏覽器預設顯示
+  // 破圖示——這裡接 `onError` 偵測失敗,退回 `bossDef.banner`(夜叉這張
+  // 有)當備用立繪,banner 也沒有的話最後退回 `ART.boss`(紅線立繪,純粹
+  // 保底不留白)。只要失敗過一次就固定用備用圖,不會每次 phase 切換又
+  // 重新嘗試載入已知會壞的路徑。
+  const [portraitBroken, setPortraitBroken] = useState(false);
   const [reviveAsk, setReviveAsk] = useState(false);
   const [rogueCardIds, setRogueCardIds] = useState(initialRogueCardIds || []);
   const [rogueOffer, setRogueOffer] = useState(null);
@@ -102,11 +109,75 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
   // state,渲染時直接讀 `viewRef.current.xxx`,只靠 `renderTick` 這一顆
   // state 觸發重繪——跟 `PlayScene.jsx`/`ParticleLayer.jsx` 同樣的模式,
   // 見 `systems/game/README.md`「主遊戲迴圈重構」章節。
-  const viewRef = useRef({ bullets: [], holdUi: null, gateUi: null, cameraStyle: {}, shakeStyle: {} });
+  const viewRef = useRef({ holdUi: null, gateUi: null, cameraStyle: {}, shakeStyle: {}, attackFx: null });
   const [, setRenderTick] = useState(0);
   const bumpRender = () => setRenderTick((t) => (t + 1) % 1000000);
 
   const bulletsRef = useRef([]);
+  // BOSS 彈幕場改用 Canvas 渲染(D 類接線,2026-07-16):跟 `PlayScene.jsx`
+  // 同一個理由跟同一種寫法(見那邊 `drawField()` 開頭註解)——原本這裡
+  // 每顆彈幕都是一個獨立 absolute-positioned div,BOSS 戰彈幕波數大、
+  // 密度高,DOM 節點數隨彈幕數量線性成長,改成單一 canvas 每幀用
+  // `ctx.clearRect()+drawImage()` 畫,節點數固定成 1 個。攻擊特效疊圖
+  // (訊號/口水)、公事包 QTE、平衡對抗閘門這幾個低頻/瞬時的 UI 疊層
+  // 刻意保留原本 DOM 寫法不動——跟 `PlayScene.jsx` 的範圍邊界一樣,只
+  // 動「每幀持續變動、數量會累積」的那一層,不是全部重寫。
+  const canvasRef = useRef(null);
+  const imgCacheRef = useRef({});
+  const canvasSizeRef = useRef({ w: 0, h: 0 });
+  const getImg = (src) => {
+    if (!src) return null;
+    let img = imgCacheRef.current[src];
+    if (!img) { img = new Image(); img.src = src; imgCacheRef.current[src] = img; }
+    return img;
+  };
+  const drawBossField = (w, h) => {
+    const canvas = canvasRef.current;
+    if (!canvas || w <= 0 || h <= 0) return;
+    if (canvasSizeRef.current.w !== w || canvasSizeRef.current.h !== h) {
+      canvas.width = w; canvas.height = h;
+      canvasSizeRef.current = { w, h };
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, w, h);
+    const laneW = (w - LANE_GAP_PX * (LANES.length - 1)) / LANES.length;
+    const laneX = (i) => i * (laneW + LANE_GAP_PX);
+    LANES.forEach((lane, i) => {
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = lane.track;
+      ctx.fillRect(laneX(i), 0, laneW, h);
+    });
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillRect(0, FALL_DISTANCE, w, 2);
+    ctx.globalAlpha = 1;
+    // 彈幕本體改用 `ART.bossBullet` 真圖疊在色塊發光上——查證過這張素材
+    // 已經在檔案本體處理好去背(角落 alpha=0),不需要額外去背程式碼,
+    // 見 `assets/art.js` `bossBullet` 欄位的查證註解。色塊發光保留當
+    // 視覺後備(圖片還沒載入完成時仍有東西可看)。
+    const bulletImg = getImg(ART.bossBullet);
+    for (const n of bulletsRef.current) {
+      const progress = Math.max(0, Math.min(1.05, 1 - (n.hitTime - beatClockRef.current) / (n.fallSec || APPROACH_SEC)));
+      const cx = laneX(n.lane) + laneW / 2, cy = progress * FALL_DISTANCE + 11;
+      ctx.save();
+      ctx.shadowColor = "#FF6A6A"; ctx.shadowBlur = 10;
+      ctx.fillStyle = "#FF3C3C";
+      ctx.beginPath(); ctx.arc(cx, cy, 11, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      if (bulletImg && bulletImg.complete && bulletImg.naturalWidth > 0) {
+        ctx.drawImage(bulletImg, cx - 11, cy - 11, 22, 22);
+      }
+    }
+  };
+  // specialFxRef(A 類接線,2026-07-16):BOSS 使用特殊招式(訊號干擾/口水
+  // 噴濺)瞬間,疊一張對應的攻擊特效圖(`ART.bossSignal`/`ART.bossSpit`)
+  // ——這兩張圖跟 `bossCase`(公事包 QTE 提示,見下方 holdUi 那段)一樣,
+  // 素材檔案早就搬進 `public/assets/`,`showNotice()` 文字提示/
+  // `applyCameraPreset(camera,"bossSkill",...)` 鏡頭效果都接了,只有這張
+  // 疊圖沒人畫出來。`until` 是這張圖顯示到什麼時候(觸發後 700ms,對照
+  // `showNotice()` 預設的 1400ms 文字提示時間短一點,純粹是攻擊瞬間的
+  // 閃現,不是持續整段提示時間都蓋著畫面)。
+  const specialFxRef = useRef({ type: null, until: 0 });
   const startPerfRef = useRef(null);
   const beatClockRef = useRef(0);
   const lastFrameAtRef = useRef(0);
@@ -425,6 +496,9 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
           const bullets = b.specialMoveBullets(move, t, { rand: Math.random, slowActive });
           for (const bl of bullets) bulletsRef.current.push({ id: `special-${now}-${bl.lane}-${Math.random().toString(36).slice(2, 6)}`, lane: bl.lane, hitTime: bl.hitTime, fallSec: bl.fallSec });
           showNotice(move === "signal" ? "📶 訊號很差啦!" : "💧 口水噴濺 · 看不清了!");
+          // A 類接線:攻擊特效疊圖(`ART.bossSignal`/`ART.bossSpit`),見上面
+          // `specialFxRef` 開頭註解。
+          specialFxRef.current = { type: move, until: now + 700 };
           // ⚠️ 新增(B2 接線):BOSS 使用特殊招式(訊號干擾/口水噴濺)瞬間,
           // 對照 `camera/presets.js` 的 `bossSkill`(短促猛推一下馬上彈回)
           // ——這是「BOSS 使用技能」這個套用時機最直接對應的觸發點,原本
@@ -573,9 +647,12 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
       const camState = camera.getState(now);
       const { x: sx, y: sy, rotate } = shake.getOffset(now);
       const view = viewRef.current;
-      view.bullets = bulletsRef.current;
+      const fieldRect = fieldBoxRef.current?.getBoundingClientRect();
+      if (fieldRect) drawBossField(fieldRect.width, FALL_DISTANCE + 40);
       view.holdUi = holdUiNext;
       view.gateUi = gateUiNext;
+      // A 類接線:攻擊特效疊圖只在觸發後短暫視窗內顯示,過了 until 就不再畫。
+      view.attackFx = now < specialFxRef.current.until ? specialFxRef.current.type : null;
       view.cameraStyle = { transform: `scale(${camState.zoom}) translate(${camState.x}px, ${camState.y}px)` };
       view.shakeStyle = { transform: `translate(${sx}px, ${sy}px) rotate(${rotate}deg)` };
       view.items = {
@@ -749,7 +826,8 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
   // 階段門檻(HP<=50% 進 P2、<=30% 進 P3),跟 `bossDef.bg/bg2/bg3` 用
   // 同一顆 phase state,兩者本來就是同一份原始碼資料(`data/boss.js`)
   // 按階段配對好的立繪/背景組合,不是分開挑的。
-  const bossPortrait = phase >= 3 ? bossDef.p3 : phase >= 2 ? bossDef.p2 : bossDef.base;
+  const bossPortraitRaw = phase >= 3 ? bossDef.p3 : phase >= 2 ? bossDef.p2 : bossDef.base;
+  const bossPortrait = portraitBroken ? (bossDef.banner || ART.boss) : bossPortraitRaw;
   const bossBgImg = phase >= 3 ? (bossDef.bg3 || bossDef.bg) : phase >= 2 ? (bossDef.bg2 || bossDef.bg) : (bossDef.bg || ART.bossBg);
 
   return (
@@ -786,6 +864,7 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
           <img
             src={bossPortrait}
             alt={bossDef.name}
+            onError={() => setPortraitBroken(true)}
             style={{ height: 96, filter: `drop-shadow(0 0 14px ${bossDef.color || "#FF3C3C"})` }}
           />
         </div>
@@ -838,30 +917,28 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
           overflow: "hidden", ...viewRef.current.shakeStyle,
         }}>
           <div style={{ position: "absolute", inset: 0, ...viewRef.current.cameraStyle }}>
-            {LANES.map((lane, i) => (
-              <div key={lane.key} style={{
-                position: "absolute", top: 0, bottom: 0,
-                left: `calc(${laneLeftExpr(i)})`, width: `calc(${laneWidthExpr})`,
-                background: lane.track, opacity: 0.35,
-                borderLeft: "1px solid rgba(255,255,255,0.08)",
-              }} />
-            ))}
-            <div style={{ position: "absolute", left: 0, right: 0, top: FALL_DISTANCE, height: 2, background: "#FFFFFF", opacity: 0.5 }} />
-            {viewRef.current.bullets.map((n) => {
-              const progress = Math.max(0, Math.min(1.05, 1 - (n.hitTime - beatClockRef.current) / (n.fallSec || APPROACH_SEC)));
-              return (
-                <div key={n.id} style={{
-                  position: "absolute", left: `calc(${laneLeftExpr(n.lane)})`, width: `calc(${laneWidthExpr})`,
-                  top: progress * FALL_DISTANCE, display: "flex", justifyContent: "center",
-                }}>
-                  <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#FF3C3C", boxShadow: "0 0 10px #FF6A6A" }} />
-                </div>
-              );
-            })}
+            {/* D 類接線(2026-07-16):軌道背景+彈幕本體改用單一 <canvas>
+                畫,取代原本每顆彈幕一個 div 的寫法,見上面 `drawBossField()`
+                開頭註解。 */}
+            <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} />
           </div>
           <LightingLayer lighting={lightingRef.current} style={{ position: "absolute", inset: 0 }} />
           <ParticleLayer pm={particleRef.current} style={{ position: "absolute", inset: 0 }} />
           <FxLayer fx={fx} style={{ position: "absolute", inset: 0 }} />
+
+          {/* A 類接線:BOSS 特殊招式攻擊特效疊圖(訊號干擾/口水噴濺),
+              對照 `specialFxRef` 開頭註解——短暫疊一張圖呼應 `showNotice()`
+              文字提示跟 `bossSkill` 鏡頭效果,三者同一個觸發時機。 */}
+          {viewRef.current.attackFx && (
+            <img
+              src={viewRef.current.attackFx === "signal" ? ART.bossSignal : ART.bossSpit}
+              alt=""
+              style={{
+                position: "absolute", inset: 0, width: "100%", height: "100%",
+                objectFit: "cover", opacity: 0.85, pointerEvents: "none", zIndex: 15,
+              }}
+            />
+          )}
 
           {viewRef.current.holdUi && (
             <div style={{
@@ -869,8 +946,11 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
               alignItems: "center", justifyContent: "center", gap: 8,
               background: "rgba(8,10,13,0.72)", zIndex: 20,
             }}>
+              {/* A 類接線:公事包 QTE 提示加 `ART.bossCase` icon,取代單靠
+                  💼 emoji。 */}
+              <img src={ART.bossCase} alt="公事包" style={{ width: 48, height: 48 }} />
               <div style={{ fontSize: 16, fontWeight: 900, color: "#FFD700" }}>
-                💼 {viewRef.current.holdUi.isFinisher ? "最後一擊!長壓接住公事包!" : "長壓接住!"}
+                {viewRef.current.holdUi.isFinisher ? "最後一擊!長壓接住公事包!" : "長壓接住!"}
               </div>
               <div style={{ fontSize: 12, opacity: 0.8 }}>按住 {(laneKeysRef.current[viewRef.current.holdUi.lane] || LANES[viewRef.current.holdUi.lane]?.keyChar || "").toUpperCase()} 鍵</div>
               <div style={{ width: 200 }}>
@@ -935,10 +1015,16 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
 
       <Dialog open={!!rogueOffer} title="🎴 抽到 3 張肉鴿卡(demo)">
         <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
+          {/* A 類接線(2026-07-16):卡片插圖(`cardArt(card.id)`),同
+              `PlayScene.jsx` 的接線,理由見 `assets/art.js` `cardArt()`
+              開頭註解。 */}
           {(rogueOffer || []).map((card) => (
-            <Card key={card.id} onClick={() => pickRogue(card)} style={{ flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
-              <div style={{ fontSize: 14, fontWeight: 700 }}>{card.icon} {card.name}{card.type === "deal" ? " (惡魔交易)" : ""}</div>
-              <div style={{ fontSize: 12, opacity: 0.8 }}>{card.desc}</div>
+            <Card key={card.id} onClick={() => pickRogue(card)} style={{ gap: 8 }}>
+              <img src={cardArt(card.id)} alt={card.name} style={{ width: 40, height: 40, borderRadius: 6, flexShrink: 0 }} />
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{card.icon} {card.name}{card.type === "deal" ? " (惡魔交易)" : ""}</div>
+                <div style={{ fontSize: 12, opacity: 0.8 }}>{card.desc}</div>
+              </div>
             </Card>
           ))}
         </div>
