@@ -4,7 +4,7 @@
 Slow Motion。套用時機：BOSS 登場、BOSS 技能、Combo 里程碑、BOSS 死亡。
 規則：平常遊戲畫面保持穩定，相機效果不能影響判定手感。
 
-## 狀態：Phase 6 完成（建立系統，尚未接線）
+## 狀態：Phase 6 完成（建立系統);2026-07-16 起 BOSS 四個套用時機已接線（見下方「跟原始碼的差異」後新增的接線紀錄）
 
 - `cameraManager.js`：`CameraManager` 類別，兩種原語:
   - **持續性(tween)**:`zoomTo(target, durationMs, easing, now)` /
@@ -35,13 +35,30 @@ Slow Motion。套用時機：BOSS 登場、BOSS 技能、Combo 里程碑、BOSS 
 減速判定/動畫,是接線階段的決定,GameEngine 完全不知道這個系統存在,
 避免相機效果不小心影響到判定手感(這是 README 本來就明訂的規則)。
 
-## 這次刻意沒做的部分
+## 這次刻意沒做的部分(2026-07-15 當時的狀態)
 
-- **實際接線**:沒有在 BOSS 登場/技能/combo 里程碑/BOSS 死亡的實際觸發點
-  呼叫這裡的 preset,`CAMERA_PRESETS` 目前只是文件參考。
+- ~~實際接線~~——**2026-07-16 已補上**,見下方新段落。
 - Camera Offset(原本規劃的一部分)沒有獨立做——`panTo`/`focusOn` 已經
   涵蓋「鏡頭偏移到某個位置」的需求,額外的「offset」概念如果之後接線時
   發現不夠用,再回來擴充。
-- `getState().timeScale` 只是建議值,真正拿去做「慢動作時判定窗/動畫
-  速度也要跟著變慢」需要接線階段仔細設計(要慢的是誰:tick 迴圈?
-  CSS 動畫?兩者都要嗎?),這裡刻意不預設答案。
+
+## 2026-07-16 接線:B2「攝影機 timeScale 依戰況動態調整」
+
+`BossScene.jsx` 補上四個套用時機的實際呼叫(comboMilestone 之前就已經在
+`PlayScene.jsx` 接線過,這次是補齊 BOSS 戰那三個 + comboMilestone 沒有的
+`bossDeath`):
+
+- **bossEntrance/bossEntranceEnd**:BOSS 戰掛載當下推近鏡頭,900ms 後
+  (對齊 preset 自己的 tween 時長)退回正常構圖,呼應「登場演出」節奏。
+- **bossSkill**:BOSS 使用特殊招式(訊號干擾/口水噴濺)瞬間觸發短促
+  猛推,對照 `BOSS_SPECIAL_INTERVAL_MS` 頻率(5.2~12 秒視階段),不會
+  太密集。
+- **bossDeath**:討伐成功瞬間觸發(`slowMotion` + `punchZoom`)。刻意
+  選在「勝負已經判定之後」觸發,此時 `b.outcome` 已確定,彈幕生成/技能
+  觸發都已經停止,`engine.hit()` 也不會再被判定輸入呼叫——slowMotion
+  純粹是演出效果,不會有「相機效果影響判定手感」的疑慮。
+
+`getState().timeScale` 這個原本只算出來、從沒被讀過的建議值,這次真的
+拿去用:`bossDeath` 觸發當下讀出的 `timeScale`,拿去當「討伐成功」對話框
+淡入動畫的時長倍率(倍率越小/慢動作越明顯,淡入就越慢)——純 CSS 進場
+動畫,一樣不影響任何判定邏輯,詳見 `game/BossScene.jsx` 的 B2 相關註解。

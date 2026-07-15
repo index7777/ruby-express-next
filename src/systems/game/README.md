@@ -97,14 +97,43 @@ React state 驅動的 game loop，React 只負責讀取 loop 狀態來 render UI
   是互斥的兩個階段,`BossScene.jsx` 沒有接 NPC 系統。
 - ~~BOSS chart 驅動模式目前一定會 fallback~~:2026-07-15q 素材搬入後
   已經真的能 fetch 到譜面,不再永遠 fallback,詳見 `boss/README.md`。
-- **四個場景的視覺呈現還是純色塊/emoji,沒有套用真正的美術素材**:
-  `assets/README.md` 2026-07-15q 已經把 158 個檔案本體搬進
-  `public/assets/`,但 `PlayScene.jsx`/`BossScene.jsx`/`SongSelectScene.
-  jsx`/`StageMapScene.jsx` 目前都還沒有改成 `<img src={ART.xxx}>` 真的
-  套用這些圖片,這是額外一輪視覺套用工程,留到之後排。
-- **道具/肉鴿卡/雙軌行李箱以外的平衡對抗(一般行駛間的曲道平衡對抗)**
-  仍然沒有接——`PlayScene.jsx` 沒有平衡對抗小遊戲,只有 `BossScene.jsx`
-  的 50%/30% 血量門檻閘門用到平衡對抗物理。
+- ~~四個場景的視覺呈現還是純色塊/emoji,沒有套用真正的美術素材~~:
+  **2026-07-16 已補上一輪(A 類)**——
+  - `PlayScene.jsx`:車廂/月台背景(`ART.stationScene`)、五軌底紋
+    (`ART.laneTrack`)、五種音符/雙軌行李箱音符改用真圖(`ART.note.*`/
+    `ART.noteDouble`,保留原本色塊當發光後備)、炸彈/雜訊改用真圖
+    (`ART.bomb`/`ART.noise`,取代 💣/📶 emoji)、NPC 清單圖示
+    (`ART.npc.*`,取代 👤 emoji)、道具按鈕 icon(`ART.item.*`)。
+  - `BossScene.jsx`:發現 `data/boss.js` 的 `BOSSES` 清單其實早就準備好
+    每隻 BOSS 的 P1/P2/P3 立繪(`base`/`p2`/`p3`)+ 三階段背景
+    (`bg`/`bg2`/`bg3`),只是這筆資料之前只有 `bgm` 欄位被讀過——這次
+    補上依 `phase` state 切換的 BOSS 立繪 + 背景疊圖。**已知素材缺口**:
+    `yaksha`(擴音夜叉)目前只有橫幅/BGM,沒有 P1/P2/P3/開場立繪檔案
+    (`redline`/`glutton`/`birdman` 三隻都齊全),選到夜叉時立繪 `<img>`
+    會顯示瀏覽器預設破圖示,這是美術產出缺口,不是接線邏輯的 bug。
+    彈幕本體(`bossBullet`)/攻擊特效疊圖(訊號干擾/口水噴濺/公事包)
+    還沒套用,留到下一輪。
+  - `SongSelectScene.jsx`:選曲背景(`ART.songselectBg`)+「共GO」按鈕
+    美術(`ART.gogoBtn`)。
+  - **`StageMapScene.jsx` 這次刻意沒動**:盤點時找不到清楚的「一張圖對應
+    一個 UI 元素」映射(`ART.routeMap`/站點鎖定圖示都沒有明確對應關係,
+    見盤點紀錄),留給之後有更清楚素材對應時再處理,避免亂猜套用。
+  - 另外盤點時發現 `public/assets/` 有 19 張 `card-*.png` 肉鴿卡插圖,
+    檔名跟卡片 `id` 逐字對應(`card-${card.id}.png`),但 `art.js` 的
+    `ART` 物件完全沒有收錄——這批素材目前是「孤兒檔案」,沒有任何
+    manifest 入口可以讀到,是後續一輪很明確的高價值目標,這次沒做
+    (需要先幫 `art.js` 補一個 `cardArt(id)` 或等效的動態路徑組合方式,
+    範圍稍微超出單純「套用既有 manifest」)。
+- ~~道具/肉鴿卡/雙軌行李箱以外的平衡對抗(一般行駛間的曲道平衡對抗)
+  仍然沒有接~~:**2026-07-16 已補上(B3)**——`PlayScene.jsx` 隨機
+  20~34 秒觸發一次「列車進入彎道」平衡對抗事件,跟 `BossScene.jsx` 的
+  50%/30% 血量門檻閘門共用同一套 `config/balanceGate.js` 純物理,這是
+  該共用模組原本就設計好的第三個呼叫端(見 `config/balanceGate.js`
+  開頭註解),只是這次才真的接線。完美完成 +20 穩定度,4 秒沒完成按比例
+  扣穩定度,完全零操作額外觸發 1.5 秒「一般失衡」樂器 lockout(跟 miss
+  打到 0 觸發的「嚴重失衡」共用同一組欄位,新增 `gameEngine.js` 的
+  `triggerImbalance(durationMs, nowMs)` 公開入口)。手機陀螺儀輸入不在
+  這次範圍,只接鍵盤/自訂 `balanceKeys`。
 - **`SongSelectScene`/`StageMapScene` 沒有接 `assets/songs.json` 動態
   曲目清單、沒有試聽播放**:前者固定用 `DEFAULT_TRACKS`,後者沒有播放
   原始碼點歌時的 `new Audio()` 循環試聽,詳見兩個檔案開頭註解。

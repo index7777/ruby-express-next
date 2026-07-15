@@ -43,7 +43,8 @@ import { useEffect, useRef, useState } from "react";
 import {
   LANES, KEY_TO_LANE, WINDOW_GOOD, APPROACH_SEC, FALL_DISTANCE,
   laneLeftExpr, laneWidthExpr, JUDGE_LABEL, ITEM_DEFS, vibrate,
-  DEFAULT_LANE_KEYS,
+  DEFAULT_LANE_KEYS, DEFAULT_BALANCE_KEYS, OPP_DIR,
+  createBalanceGate, advanceBalanceGate,
 } from "../config/index.js";
 import { buildChart, accRank } from "../judge/index.js";
 import { createGameEngine } from "../judge/gameEngine.js";
@@ -61,6 +62,7 @@ import {
 import { createNpcManager } from "../npc/index.js";
 import { loadSave, writeSave } from "../save/index.js";
 import { evalRun } from "../data/index.js";
+import { ART } from "../assets/index.js";
 import { Button, Card, Dialog, ProgressBar } from "../ui/index.js";
 
 const CHART_CYCLES = 6; // 16 步/cycle * BEAT_SEC(0.6s) ≈ 9.6 秒/cycle,約 1 分鐘的備援節奏
@@ -100,7 +102,7 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
   const [notice, setNotice] = useState("");
   // 每幀都會變的畫面資料收在這裡(不是 React state),渲染時直接讀
   // `viewRef.current.xxx`,只靠 `renderTick` 這一顆 state 觸發重繪。
-  const viewRef = useRef({ notes: [], bombs: [], noise: [], npcs: [], cameraStyle: {}, shakeStyle: {}, items: null });
+  const viewRef = useRef({ notes: [], bombs: [], noise: [], npcs: [], cameraStyle: {}, shakeStyle: {}, items: null, balanceUi: null });
   const [, setRenderTick] = useState(0);
   const bumpRender = () => setRenderTick((t) => (t + 1) % 1000000);
 
@@ -130,14 +132,37 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
   // 但這個畫面從來沒有真的讀回來用,玩家在設定頁重新綁定的鍵完全沒有
   // 效果。只在掛載當下讀一次(跟原始碼一樣,對照 1373 行的驗證規則:
   // 陣列長度要剛好 5 才採用,否則 fallback 回預設值)。
+  // balanceKeysRef(B3 接線新增):平衡對抗事件(見下面 `balanceRef` 相關
+  // 程式碼)要用的抵抗方向鍵,同一批驗證規則(對照 1374 行:四個方向都要
+  // 有值才採用)。
   const laneKeysRef = useRef(DEFAULT_LANE_KEYS.slice());
+  const balanceKeysRef = useRef({ ...DEFAULT_BALANCE_KEYS });
   const laneKeysLoadedRef = useRef(false);
   if (!laneKeysLoadedRef.current) {
     laneKeysLoadedRef.current = true;
     const s = (loadSave().settings) || {};
     laneKeysRef.current = (Array.isArray(s.laneKeys) && s.laneKeys.length === 5)
       ? s.laneKeys.slice() : DEFAULT_LANE_KEYS.slice();
+    balanceKeysRef.current = (s.balanceKeys && s.balanceKeys.forward && s.balanceKeys.backward && s.balanceKeys.left && s.balanceKeys.right)
+      ? { ...s.balanceKeys } : { ...DEFAULT_BALANCE_KEYS };
   }
+  // balanceRef/turnTimerRef/turnNextRef/heldDirRef(B3 接線新增):對照
+  // 原始碼「列車進入彎道」平衡對抗事件(2313-2337 行觸發、2280-2312 行
+  // 結算)——這個場景原本完全沒有這個玩法,只有 `BossScene.jsx` 的
+  // 50%/30% 血量門檻做了(兩者共用同一套 `config/balanceGate.js` 純物理,
+  // 見該檔案開頭註解「三處呼叫端」)。`turnTimerRef`/`turnNextRef` 是
+  // 隨機 20~34 秒觸發一次的計時器(對照原始碼 `turnTimerRef`/`turnNextRef`
+  // 命名直接沿用),`balanceRef` 是目前進行中的平衡對抗閘門(null=沒在
+  // 進行),`heldDirRef` 是目前按住的抵抗方向。手機陀螺儀輸入(原始碼
+  // `balanceInput==="tilt"`)不在這次範圍(使用者這輪明確排除的 C 類),
+  // 只接鍵盤/自訂 `balanceKeys`,跟 `BossScene.jsx` 一致只做簡化版左右
+  // 兩態(原始碼這個事件本身也只在 left/right 兩個方向間選,不是 4 方向
+  // 都會出現,見下面觸發程式碼的比對)。
+  const balanceRef = useRef(null);
+  const turnTimerRef = useRef(0);
+  const turnNextRef = useRef(20000 + Math.random() * 14000);
+  const heldDirRef = useRef(null);
+  const lastFrameAtRef = useRef(0); // 給平衡對抗物理算 deltaMs 用(對照 BossScene.jsx 同名 ref)
 
   const particleRef = useRef(null);
   if (!particleRef.current) particleRef.current = createParticleManager();
@@ -481,6 +506,7 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
     nextIdxRef.current = 0;
     notesRef.current = [];
     startPerfRef.current = performance.now();
+    lastFrameAtRef.current = startPerfRef.current; // B3 接線:平衡對抗物理算 deltaMs 用
 
     const tick = () => {
       // 播完就徹底停掉這個迴圈,不再重新排下一幀——修正一個曾經發生的
@@ -492,6 +518,8 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
       if (endedRef.current) return;
 
       const now = performance.now();
+      const deltaMs = now - lastFrameAtRef.current; // B3 接線:平衡對抗物理(advanceBalanceGate)要用真實影格間隔,不能假設固定 50ms
+      lastFrameAtRef.current = now;
       beatClockRef.current = (now - startPerfRef.current) / 1000;
       const t = beatClockRef.current;
 
@@ -529,7 +557,12 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
         // + (stability<30?1:0) + npcExtra`,`npcManager.rollSpawn()` 本身
         // 已經處理 stability<30 那一段,這裡只需要把 npcExtra 加進 npcCap)。
         const npcCap = 2 + (rogueRef.current.npcExtra || 0);
-        const type = npc.rollSpawn(now, { npcWeight: 1, npcCap, stability: liveStability }, Math.random);
+        // B3 接線:`trainBalanceActive` 這個 ctx 欄位 `npcManager.js` 本來就
+        // 已經支援(`rollSpawn()` 用來避免平衡對抗事件進行中/讓座學生在場
+        // 時又抽到「背包客」NPC,見該檔案 61 行),只是這個場景之前完全
+        // 沒有平衡對抗事件,一直傳預設值 false。現在平衡對抗事件補上了,
+        // 這裡就把目前是否有進行中的平衡對抗餵給它。
+        const type = npc.rollSpawn(now, { npcWeight: 1, npcCap, stability: liveStability, trainBalanceActive: !!balanceRef.current }, Math.random);
         if (type) npc.spawn(type, now, { rand: Math.random });
       }
       // ⚠️ 2026-07-15n 修正:這裡原本錯誤地拿「現在 t」去比對盤面音符,但
@@ -613,6 +646,55 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
         for (const n of expired) engineRef.current.miss(n.lane, n.kind !== "double", now);
       }
 
+      // ⚠️ 新增(B3 接線):一般行駛階段的平衡對抗事件——對照原始碼「列車
+      // 進入彎道」(index.html 2313-2337 行觸發、2280-2312 行結算),跟
+      // BOSS 戰的 50%/30% 血量門檻平衡對抗共用同一套 `config/balanceGate.js`
+      // 純物理,這是這次才補上的第三個呼叫端(見上面 `balanceRef` 相關
+      // 註解)。沒有進行中的平衡對抗時,累計計時器,隨機 20~34 秒觸發一次
+      // (跟原始碼同一組隨機區間);有進行中的就每幀推進物理,完美完成
+      // (heldMs 累滿 needMs)+20 穩定度,4 秒沒完成則按比例扣穩定度(最多
+      // 扣 20),完全零操作(pct<=0)額外觸發 1.5 秒「一般失衡」樂器
+      // lockout(對照原始碼 imbalanceKindRef="",跟 miss 打到 0 觸發的
+      // 「嚴重失衡」kind="severe" 是同一組欄位、不同持續時間/觸發原因)。
+      let balanceUiNext = null;
+      if (!balanceRef.current) {
+        turnTimerRef.current += deltaMs;
+        if (turnTimerRef.current >= turnNextRef.current) {
+          turnTimerRef.current = 0;
+          turnNextRef.current = 20000 + Math.random() * 14000;
+          const push = Math.random() < 0.5 ? "left" : "right";
+          balanceRef.current = createBalanceGate({ push, needMs: 900, now, burstMs: 0, clashMs: 4000 });
+          heldDirRef.current = null;
+          showNotice("⚠ 列車進入彎道 · 請坐穩並抓緊扶手", 2000);
+        }
+      } else {
+        const bl = balanceRef.current;
+        const counterActive = heldDirRef.current != null && OPP_DIR[bl.push] === heldDirRef.current;
+        const wrongActive = heldDirRef.current === bl.push;
+        advanceBalanceGate(bl, { counterActive, wrongActive }, now, deltaMs);
+        const pct = Math.min(1, bl.heldMs / bl.needMs);
+        if (pct >= 1 || now > bl.deadline) {
+          balanceRef.current = null;
+          if (pct >= 1) {
+            engineRef.current.addStability(20, "balance", now);
+            showNotice("完美平衡 +20 穩定", 1200);
+          } else {
+            const penalty = Math.round(20 * (1 - pct));
+            engineRef.current.addStability(-penalty, "balance", now);
+            if (pct <= 0) {
+              engineRef.current.triggerImbalance(1500, now);
+              vibrate([80, 60, 80, 60, 120]);
+              showNotice(`完全沒抓平衡 · 穩定 -${penalty} · 樂器暫停`, 1400);
+            } else {
+              vibrate([60, 40, 60]);
+              showNotice(`平衡未完成 · 穩定 -${penalty}`, 1400);
+            }
+          }
+        } else {
+          balanceUiNext = { push: bl.push, counter: OPP_DIR[bl.push], pct };
+        }
+      }
+
       const camState = camera.getState(now);
       const { x: sx, y: sy, rotate } = shake.getOffset(now);
       const view = viewRef.current;
@@ -620,6 +702,7 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
       view.bombs = npc.bombs;
       view.noise = npc.noise;
       view.npcs = npc.active.map((n) => ({ id: n.id, type: n.type, remainMs: Math.max(0, n.durationMs - (now - n.bornAt)) }));
+      view.balanceUi = balanceUiNext;
       view.cameraStyle = { transform: `scale(${camState.zoom}) translate(${camState.x}px, ${camState.y}px)` };
       view.shakeStyle = { transform: `translate(${sx}px, ${sy}px) rotate(${rotate}deg)` };
       view.items = {
@@ -654,6 +737,12 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
     const onKeyDown = (e) => {
       const itemKey = ITEM_KEY_MAP[e.key];
       if (itemKey) { activateItem(itemKey, performance.now()); return; }
+      // B3 接線:平衡對抗抵抗方向鍵(讀自訂 balanceKeys.left/right,跟
+      // `BossScene.jsx` 一樣只支援簡化版左右兩態,見上面平衡事件註解)——
+      // 刻意放在 lane-key 提前 return 之前,不然方向鍵(不在 laneKeysRef
+      // 裡)會被下面的 `if (laneIdx === -1) return;` 提前擋掉,永遠不會走到。
+      if (e.key === balanceKeysRef.current.left) heldDirRef.current = "left";
+      else if (e.key === balanceKeysRef.current.right) heldDirRef.current = "right";
       // B1 接線:讀 laneKeysRef(行控中心設定頁存的自訂快捷鍵),不是寫死
       // 的 KEY_TO_LANE,對照原始碼 3513 行 `laneKeysRef.current.findIndex()`。
       const k = e.key.toLowerCase();
@@ -666,11 +755,18 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
         notes: notesRef.current, bombs: npcRef.current.bombs, noise: npcRef.current.noise,
       });
     };
+    const onKeyUp = (e) => {
+      // B3 接線:放開抵抗方向鍵。
+      if (e.key === balanceKeysRef.current.left && heldDirRef.current === "left") heldDirRef.current = null;
+      if (e.key === balanceKeysRef.current.right && heldDirRef.current === "right") heldDirRef.current = null;
+    };
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
 
     return () => {
       cancelAnimationFrame(rafRef.current);
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
       audio.stopGameBgm(); // 離開這個場景(離開/切歌/卸載)要停掉遊戲頻道,避免下一個場景疊音樂
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -678,11 +774,15 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
 
   return (
     <div style={{
-      minHeight: "100vh", background: "#0B0D10", color: "#8FE0FF",
+      minHeight: "100vh", position: "relative", background: "#0B0D10", color: "#8FE0FF",
       fontFamily: "-apple-system, system-ui, sans-serif", padding: 20,
       display: "flex", flexDirection: "column", alignItems: "center",
     }}>
-      <div style={{ width: "100%", maxWidth: 520 }}>
+      {/* A 類接線(2026-07-16):車廂/月台背景素材,對照 `MenuLayout.jsx`
+          既有的「絕對定位滿版 backgroundImage + 深色漸層疊層」寫法。 */}
+      <div style={{ position: "absolute", inset: 0, backgroundImage: `url(${ART.stationScene})`, backgroundSize: "cover", backgroundPosition: "center" }} />
+      <div style={{ position: "absolute", inset: 0, background: "linear-gradient(rgba(11,13,16,0.5), rgba(11,13,16,0.88))" }} />
+      <div style={{ position: "relative", width: "100%", maxWidth: 520 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
           <div style={{ fontSize: 18, fontWeight: 700 }}>共GO · 判定測試場(最小可玩){track ? ` · ${track.name}` : ""}</div>
           <Button variant="ghost" onClick={onExit}>離開</Button>
@@ -719,6 +819,8 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
                   style={{ flex: 1, fontSize: 11, opacity: charges > 0 ? 1 : 0.4, borderColor: def.color, color: active ? undefined : def.color }}
                   onClick={() => activateItem(key, performance.now())}
                 >
+                  {/* A 類接線:道具 icon(`ART.item.{key}`)加在文字前面。 */}
+                  <img src={ART.item[key]} alt={def.label} style={{ width: 14, height: 14, marginRight: 4, verticalAlign: "middle" }} />
                   {i + 1}·{def.label}({charges})
                 </Button>
               );
@@ -728,6 +830,7 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
               style={{ flex: 1, fontSize: 11 }}
               onClick={() => activateItem("express", performance.now())}
             >
+              <img src={ART.item.express} alt="必殺技" style={{ width: 14, height: 14, marginRight: 4, verticalAlign: "middle" }} />
               4·{viewRef.current.items.expressReady ? "必殺!" : `${Math.floor(viewRef.current.items.expressCharge)}%`}
             </Button>
           </div>
@@ -746,16 +849,24 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
           overflow: "hidden", ...viewRef.current.shakeStyle,
         }}>
           <div style={{ position: "absolute", inset: 0, ...viewRef.current.cameraStyle }}>
+            {/* A 類接線(2026-07-16):五軌底紋素材(`ART.laneTrack`)疊在
+                原本的純色軌道上(backgroundBlendMode 混色,不是取代——保留
+                原本的 per-lane 顏色區分,素材只是加一層紋理質感)。 */}
             {LANES.map((lane, i) => (
               <div key={lane.key} style={{
                 position: "absolute", top: 0, bottom: 0,
                 left: `calc(${laneLeftExpr(i)})`, width: `calc(${laneWidthExpr})`,
                 background: lane.track, opacity: 0.35,
+                backgroundImage: `url(${ART.laneTrack})`, backgroundSize: "cover", backgroundBlendMode: "overlay",
                 borderLeft: "1px solid rgba(255,255,255,0.08)",
               }} />
             ))}
             {/* 判定線 */}
             <div style={{ position: "absolute", left: 0, right: 0, top: FALL_DISTANCE, height: 2, background: "#FFFFFF", opacity: 0.5 }} />
+            {/* A 類接線:音符改用 `ART.note.{kick,hihat,snare,tom,crash}`/
+                `ART.noteDouble` 真的圖片,不是純色塊——保留原本的
+                boxShadow 發光當作沒素材時的視覺後備(圖片載入失敗也還有
+                色塊輪廓,不會整個消失看不到判定位置)。 */}
             {viewRef.current.notes.map((n) => {
               const progress = Math.max(0, Math.min(1.05, 1 - (n.hitTime - beatClockRef.current) / APPROACH_SEC));
               const laneDef = LANES[n.lane];
@@ -771,6 +882,8 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
                   <div style={{
                     width: isDouble ? "80%" : 26, height: 26, borderRadius: isDouble ? 6 : (laneDef.shape === "circle" ? "50%" : 6),
                     background: isDouble ? "#FFD43B" : laneDef.note,
+                    backgroundImage: `url(${isDouble ? ART.noteDouble : ART.note[laneDef.key]})`,
+                    backgroundSize: "contain", backgroundPosition: "center", backgroundRepeat: "no-repeat",
                     boxShadow: `0 0 10px ${isDouble ? "#FFD43B" : laneDef.glow}`,
                   }} />
                 </div>
@@ -781,21 +894,40 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
                 position: "absolute",
                 left: `calc(${laneLeftExpr(b.lane)})`, width: `calc(${laneWidthExpr})`,
                 top: Math.max(0, Math.min(1.05, 1 - (b.hitTime - beatClockRef.current) / APPROACH_SEC)) * FALL_DISTANCE,
-                display: "flex", justifyContent: "center", fontSize: 20,
-              }}>💣</div>
+                display: "flex", justifyContent: "center",
+              }}><img src={ART.bomb} alt="炸彈" style={{ width: 24, height: 24 }} /></div>
             ))}
             {viewRef.current.noise.map((n) => (
               <div key={n.id} style={{
                 position: "absolute",
                 left: `calc(${laneLeftExpr(n.lane)})`, width: `calc(${laneWidthExpr})`,
                 top: Math.max(0, Math.min(1.05, 1 - (n.hitTime - beatClockRef.current) / APPROACH_SEC)) * FALL_DISTANCE,
-                display: "flex", justifyContent: "center", fontSize: 18, opacity: 0.85,
-              }}>📶</div>
+                display: "flex", justifyContent: "center", opacity: 0.85,
+              }}><img src={ART.noise} alt="雜訊" style={{ width: 20, height: 20 }} /></div>
             ))}
           </div>
           <LightingLayer lighting={lightingRef.current} style={{ position: "absolute", inset: 0 }} />
           <ParticleLayer pm={particleRef.current} style={{ position: "absolute", inset: 0 }} />
           <FxLayer fx={fx} style={{ position: "absolute", inset: 0 }} />
+
+          {/* B3 接線:平衡對抗事件進行中的覆蓋層,對照 `BossScene.jsx` 的
+              `gateUi` 同一種呈現方式(全畫面半透明疊層 + 抵抗方向文字 +
+              進度條)。 */}
+          {viewRef.current.balanceUi && (
+            <div style={{
+              position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "center", gap: 8,
+              background: "rgba(8,10,13,0.72)", zIndex: 20,
+            }}>
+              <div style={{ fontSize: 16, fontWeight: 900, color: "#3FE0FF" }}>⚠ 列車進入彎道!</div>
+              <div style={{ fontSize: 12, opacity: 0.8 }}>
+                按住 {viewRef.current.balanceUi.push === "left" ? "→(往右抵抗)" : "←(往左抵抗)"}
+              </div>
+              <div style={{ width: 200 }}>
+                <ProgressBar value={viewRef.current.balanceUi.pct} color="#3FE0FF" />
+              </div>
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", justifyContent: "space-around", marginTop: 10, fontSize: 12, opacity: 0.75 }}>
@@ -809,7 +941,12 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
         {viewRef.current.npcs.length > 0 && (
           <div style={{ marginTop: 10, fontSize: 11, opacity: 0.75, display: "flex", flexWrap: "wrap", gap: 8 }}>
             {viewRef.current.npcs.map((n) => (
-              <span key={n.id}>👤 {n.type}({Math.ceil(n.remainMs / 1000)}s)</span>
+              <span key={n.id} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                {/* A 類接線:NPC 清單改用 `ART.npc.{type}` 圖示,不是 👤 emoji
+                    ——13 種 NPC 圖示檔名跟 `n.type` 逐字對應。 */}
+                {ART.npc[n.type] && <img src={ART.npc[n.type]} alt={n.type} style={{ width: 16, height: 16 }} />}
+                {n.type}({Math.ceil(n.remainMs / 1000)}s)
+              </span>
             ))}
           </div>
         )}

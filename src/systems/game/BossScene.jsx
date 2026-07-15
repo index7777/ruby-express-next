@@ -20,9 +20,11 @@
 // - **2026-07-15q 更新:素材已搬入**,`assets/boss-bgm-<bossId>.normal.json`
 //   現在真的抓得到資料,不再永遠 fallback 到備援固定間隔模式,詳見
 //   `systems/assets/README.md`。
-// - 沒有 BOSS 立繪/彈幕美術素材疊圖——素材檔案本體雖然已經搬進
-//   `public/assets/`,但這個場景還沒有改成 `<img src={ART.xxx}>` 真的
-//   套用,彈幕/BOSS 本體目前還是畫成純色塊。
+// - ~~沒有 BOSS 立繪/彈幕美術素材疊圖~~:**2026-07-16 已補上 BOSS 立繪
+//   (依階段 P1/P2/P3 換圖)+ 戰鬥背景(依階段換圖)**,見下方 `bossDef`
+//   相關程式碼跟 `game/README.md` 的 A 類接線紀錄。彈幕本體(落下的
+//   `bossBullet` 圓點)/攻擊特效疊圖(訊號干擾/口水噴濺/公事包)這幾項
+//   還沒套用真圖,仍是純色塊/CSS,留待下一輪。
 // - 平衡對抗閘門的「抵抗方向」只接鍵盤方向鍵(←/→),沒有接手機陀螺儀
 //   (那是 `systems/config/constants.js` IS_TOUCH 判斷之後才會處理的範圍)。
 //
@@ -46,6 +48,7 @@ import { createBossManager } from "../boss/index.js";
 import { createDefaultRogue, recalcRogue, rollArrivalCards, accRank } from "../judge/index.js";
 import { loadSave, writeSave } from "../save/index.js";
 import { BOSSES, evalRun } from "../data/index.js";
+import { ART } from "../assets/index.js";
 import { Button, Card, ProgressBar, Dialog } from "../ui/index.js";
 
 const REVIVE_COST = 80; // 對照原始碼 confirmRevive() 的哩程扣點數
@@ -68,12 +71,29 @@ const LABEL_TO_FX = { PERFECT: "perfect", GREAT: "great", GOOD: "good", MISS: "m
 // `judge/README.md` 2026-07-15r 章節),沒傳(BOSS 戰測試/舊呼叫端)就
 // 維持原本從預設值開始的行為。
 export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "redline", onFinished, initialRogueCardIds }) {
+  // bossDef(A 類接線,2026-07-16):`data/boss.js` 的 `BOSSES` 清單其實早就
+  // 幫每隻 BOSS 準備好 P1/P2/P3 立繪(`base`/`p2`/`p3`)、開場氣氛圖(`key`)、
+  // 三階段背景(`bg`/`bg2`/`bg3`)——這個場景之前只用這筆資料的 `bgm`
+  // 欄位(見下面 mount effect 的 `audio.playGameBgm`),立繪/背景欄位一直
+  // 沒人讀過,BOSS 本體視覺全靠純色塊/CSS lighting 撐場面。不是 `art.js`
+  // 的 `ART.boss/bossP2/bossP3` 缺料(那幾個只寫死紅線一隻 BOSS 的路徑),
+  // 真正該讀的是這裡、`BOSSES.find()` 找到的這筆 `bossDef`。
+  // ⚠️ 已知素材缺口:`yaksha`(擴音夜叉)只有橫幅(`banner`)跟 BGM,`base`/
+  // `p2`/`p3`/`key` 這四張立繪檔案實際上還沒有畫出來放進 `public/assets/`
+  // (`redline`/`glutton`/`birdman` 三隻都齊全),選到夜叉時這裡 `<img>`
+  // 會 404 顯示破圖示——這是美術產出缺口,不是接線邏輯的 bug,留給後續
+  // 補圖。
+  const bossDef = BOSSES.find((b) => b.id === bossId) || BOSSES[0];
   const [bossHp, setBossHp] = useState(100);
   const [playerHp, setPlayerHp] = useState(100);
   const [phase, setPhase] = useState(1);
   const [score, setScore] = useState(0);
   const [notice, setNotice] = useState("");
   const [outcome, setOutcome] = useState(null); // null | "win" | "lose"
+  // winTimeScale(B2 接線):`bossDeath` camera preset 的 `slowMotion` 建議
+  // 倍率,拿來決定討伐成功對話框的淡入時長(見下面 win 判定區塊/Dialog),
+  // 讓 `timeScale` 這個原本只算出來沒人讀的數字真的產生視覺效果。
+  const [winTimeScale, setWinTimeScale] = useState(1);
   const [reviveAsk, setReviveAsk] = useState(false);
   const [rogueCardIds, setRogueCardIds] = useState(initialRogueCardIds || []);
   const [rogueOffer, setRogueOffer] = useState(null);
@@ -319,11 +339,26 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
     // 同一個缺口:這個場景過去完全沒有呼叫 `AudioManager.playGameBgm()`,
     // 玩家只聽得到合成鼓聲跟連段音效。`BOSSES` 資料裡每隻王都有自己的
     // `bgm` 路徑(`data/boss.js`),找不到對應 id 就 fallback 紅線王的曲。
-    const bossDef = BOSSES.find((b) => b.id === bossId);
-    audio.playGameBgm((bossDef && bossDef.bgm) || "assets/boss-bgm-redline.mp3", { loop: true, resetTime: true });
+    // (A 類接線後改用元件頂層算好的 `bossDef`,跟立繪/背景共用同一筆
+    // 資料,不再另外重找一次。)
+    audio.playGameBgm(bossDef.bgm || "assets/boss-bgm-redline.mp3", { loop: true, resetTime: true });
     startPerfRef.current = performance.now();
     lastFrameAtRef.current = startPerfRef.current;
     bulletsRef.current = [];
+
+    // ⚠️ 新增(B2 接線):BOSS 登場鏡頭——對照 `camera/presets.js` 的
+    // `bossEntrance`/`bossEntranceEnd`(camera/README.md 明訂的四個套用
+    // 時機之二),這兩個 preset 從 Phase 6 建好就沒有任何畫面呼叫過,只是
+    // 文件參考。掛載當下(BOSS 登場)先推近鏡頭(`zoomTo(1.15, 900ms)`),
+    // 900ms 後(跟 preset 自己的 tween 時長對齊)退回正常構圖開始正式
+    // 戰鬥,呼應原本設計「登場演出結束才進入真正判定」的節奏——這個退鏡
+    // 動作只是視覺 zoom 過渡,不影響判定時機(彈幕/BGM 本來就是掛載當下
+    // 就開始跑,沒有另外做「演出播完才開始判定」的暫停機制,鏡頭效果本身
+    // 就設計成「不能影響判定手感」,見 camera/README.md 規則)。
+    applyCameraPreset(camera, "bossEntrance", performance.now());
+    const entranceEndTimer = setTimeout(() => {
+      applyCameraPreset(camera, "bossEntranceEnd", performance.now());
+    }, 900);
 
     const tick = () => {
       const now = performance.now();
@@ -390,6 +425,12 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
           const bullets = b.specialMoveBullets(move, t, { rand: Math.random, slowActive });
           for (const bl of bullets) bulletsRef.current.push({ id: `special-${now}-${bl.lane}-${Math.random().toString(36).slice(2, 6)}`, lane: bl.lane, hitTime: bl.hitTime, fallSec: bl.fallSec });
           showNotice(move === "signal" ? "📶 訊號很差啦!" : "💧 口水噴濺 · 看不清了!");
+          // ⚠️ 新增(B2 接線):BOSS 使用特殊招式(訊號干擾/口水噴濺)瞬間,
+          // 對照 `camera/presets.js` 的 `bossSkill`(短促猛推一下馬上彈回)
+          // ——這是「BOSS 使用技能」這個套用時機最直接對應的觸發點,原本
+          // 這個 preset 從沒被呼叫過。頻率對照 `BOSS_SPECIAL_INTERVAL_MS`
+          // (5.2~12 秒視階段而定),不會太密集。
+          applyCameraPreset(camera, "bossSkill", now);
         }
       }
 
@@ -472,6 +513,21 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
       }
       if (outcomeNow === "win" && !winHandledRef.current) {
         winHandledRef.current = true;
+        // ⚠️ 新增(B2 接線):BOSS 死亡「子彈時間」——對照 `camera/presets.js`
+        // 的 `bossDeath`(`slowMotion(0.25, 1400ms)` + `punchZoom`),這個
+        // preset 從 Phase 6 建好就沒有任何畫面呼叫過。觸發時機在這裡(勝負
+        // 已經判定之後)是刻意選的:此時 `b.outcome` 已經確定,下面
+        // `if (!b.outcome && !b.hold && !b.gate)` 那個生彈幕/生特殊招式的
+        // 區塊本輪起就不會再執行,`onKeyDown` 也不會再呼叫 `engine.hit()`
+        // 判定(見下方 win Dialog 一出現,遊玩輸入本來就結束了)——所以
+        // slowMotion 純粹是「已經分出勝負之後」的演出效果,不會有「相機
+        // 效果影響判定手感」的疑慮(camera/README.md 明訂的規則)。
+        // `camera.getState(now).timeScale` 這個原本只算出來、從沒被讀過的
+        // 建議值,這裡真的拿去用:當作「討伐成功」對話框淡入動畫的時長
+        // 倍率(見下方 JSX),timeScale 越小(慢動作越明顯)淡入就越慢,
+        // 呼應「子彈時間」的視覺節奏。
+        applyCameraPreset(camera, "bossDeath", now);
+        setWinTimeScale(camera.getState(now).timeScale || 1);
         setOutcome(outcomeNow);
         setBossHp(b.hp); setPlayerHp(b.playerHp);
         // 對照原始碼 endBoss() 給哩程獎勵,簡化版公式(這個場景是獨立
@@ -572,6 +628,7 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
     return () => {
       cancelAnimationFrame(rafRef.current);
       clearTimeout(noticeTimerRef.current);
+      clearTimeout(entranceEndTimer);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       audio.stopGameBgm(); // 離開這個場景要停掉遊戲頻道,避免下一個場景疊音樂
@@ -634,6 +691,7 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
     giveUpHandledRef.current = false;
     setOutcome(null); setReviveAsk(false); setScore(0);
     setBossHp(100); setPlayerHp(100); setPhase(1);
+    setWinTimeScale(1); // 重新挑戰,下次贏了淡入動畫時長重新算,不沿用上一輪殘留值
   };
 
   // doGiveUp:「我要下車」放棄挑戰——對照原始碼 `doFailBoss()`(即使沒有
@@ -687,13 +745,25 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
     showNotice(`🎴 選了「${card.name}」`);
   };
 
+  // A 類接線:立繪依 `phase`(1/2/3)切換,對照 `bossManager.js` 的
+  // 階段門檻(HP<=50% 進 P2、<=30% 進 P3),跟 `bossDef.bg/bg2/bg3` 用
+  // 同一顆 phase state,兩者本來就是同一份原始碼資料(`data/boss.js`)
+  // 按階段配對好的立繪/背景組合,不是分開挑的。
+  const bossPortrait = phase >= 3 ? bossDef.p3 : phase >= 2 ? bossDef.p2 : bossDef.base;
+  const bossBgImg = phase >= 3 ? (bossDef.bg3 || bossDef.bg) : phase >= 2 ? (bossDef.bg2 || bossDef.bg) : (bossDef.bg || ART.bossBg);
+
   return (
     <div style={{
-      minHeight: "100vh", background: "#0B0D10", color: "#8FE0FF",
+      minHeight: "100vh", position: "relative", background: "#0B0D10", color: "#8FE0FF",
       fontFamily: "-apple-system, system-ui, sans-serif", padding: 20,
       display: "flex", flexDirection: "column", alignItems: "center",
     }}>
-      <div style={{ width: "100%", maxWidth: 520 }}>
+      {/* A 類接線(2026-07-16):BOSS 戰背景依階段換圖(`bossDef.bg/bg2/bg3`),
+          對照 `MenuLayout.jsx` 既有的「絕對定位滿版 backgroundImage + 深色
+          漸層疊層」寫法。 */}
+      <div style={{ position: "absolute", inset: 0, backgroundImage: `url(${bossBgImg})`, backgroundSize: "cover", backgroundPosition: "center", transition: "background-image 0.3s" }} />
+      <div style={{ position: "absolute", inset: 0, background: "linear-gradient(rgba(11,13,16,0.5), rgba(11,13,16,0.9))" }} />
+      <div style={{ position: "relative", width: "100%", maxWidth: 520 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
           <div style={{ fontSize: 18, fontWeight: 700 }}>共GO · BOSS 對戰場(Phase 9 接線)</div>
           <Button variant="ghost" onClick={onExit}>離開</Button>
@@ -705,6 +775,19 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
           <Button variant="ghost" style={{ fontSize: 11, marginLeft: "auto" }} onClick={rollRogue}>
             🎴 抽卡(demo){rogueCardIds.length > 0 ? ` · ${rogueCardIds.length} 張` : ""}
           </Button>
+        </div>
+
+        {/* A 類接線:BOSS 立繪(依階段換 P1/P2/P3 圖),對照
+            `data/boss.js` `BOSSES[].base/p2/p3` 欄位——這筆資料先前只有
+            `bgm` 被讀過,立繪欄位一直沒有呼叫端使用。`yaksha` 目前缺
+            立繪檔案(見上方元件開頭註解),圖片載入失敗瀏覽器會顯示破圖
+            示,不影響其餘判定邏輯。 */}
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
+          <img
+            src={bossPortrait}
+            alt={bossDef.name}
+            style={{ height: 96, filter: `drop-shadow(0 0 14px ${bossDef.color || "#FF3C3C"})` }}
+          />
         </div>
 
         <div style={{ marginBottom: 6 }}>
@@ -832,7 +915,17 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
         </div>
       </Dialog>
 
-      <Dialog open={outcome === "win"} title="🎉 討伐成功">
+      {/* B2 接線:「討伐成功」淡入時長綁 `winTimeScale`(bossDeath preset
+          算出來的 slowMotion 建議倍率),倍率越小(慢動作越明顯)淡入
+          動畫拉得越長,讓 `timeScale` 這個原本只是算出來、從沒被讀過的
+          數字真的產生看得到的視覺效果——單純 CSS 進場動畫,不影響任何
+          判定邏輯(此時勝負已經判定完畢)。 */}
+      <style>{`@keyframes bossWinFadeIn { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: scale(1); } }`}</style>
+      <Dialog
+        open={outcome === "win"}
+        title="🎉 討伐成功"
+        style={{ animation: `bossWinFadeIn ${Math.round(900 / (winTimeScale || 1))}ms ease-out` }}
+      >
         <div style={{ fontSize: 13, color: "#C0C8D0", textAlign: "center", width: "100%", marginBottom: 10 }}>
           分數 {score}
         </div>

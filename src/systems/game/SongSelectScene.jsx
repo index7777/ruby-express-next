@@ -16,8 +16,15 @@
 // - 沒有真的試聽播放(原始碼點一首會用 `new Audio(file)` 循環播放
 //   0.7 音量試聽,這裡只是視覺上標記選中,試聽音效留到接線階段一起做,
 //   避免這輪同時處理太多音訊播放的邊界情況)。
+//
+// ── 2026-07-16 接線(A 類:視覺/美術套用)──
+// 之前這個畫面全是純色塊,`ART.songselectBg`/`ART.gogoBtn` 素材檔案早就
+// 搬進 `public/assets/`(見 `assets/README.md`)卻沒有任何地方真的
+// `<img>`/`backgroundImage` 套用過。背景圖套用手法對照 `MenuLayout.jsx`
+// 既有的「絕對定位滿版 backgroundImage + 深色漸層疊層」寫法,不是新發明。
 import { useState } from "react";
 import { DEFAULT_TRACKS } from "../data/index.js";
+import { ART } from "../assets/index.js";
 import { Button, Card } from "../ui/index.js";
 
 export default function SongSelectScene({ onConfirm, onBack }) {
@@ -25,11 +32,13 @@ export default function SongSelectScene({ onConfirm, onBack }) {
 
   return (
     <div style={{
-      minHeight: "100vh", background: "#0B0D10", color: "#8FE0FF",
+      minHeight: "100vh", position: "relative", background: "#0B0D10", color: "#8FE0FF",
       fontFamily: "-apple-system, system-ui, sans-serif", padding: 20,
       display: "flex", flexDirection: "column", alignItems: "center",
     }}>
-      <div style={{ width: "100%", maxWidth: 420 }}>
+      <div style={{ position: "absolute", inset: 0, backgroundImage: `url(${ART.songselectBg})`, backgroundSize: "cover", backgroundPosition: "center" }} />
+      <div style={{ position: "absolute", inset: 0, background: "linear-gradient(rgba(11,13,16,0.55), rgba(11,13,16,0.86))" }} />
+      <div style={{ position: "relative", width: "100%", maxWidth: 420 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 14 }}>
           <div style={{ fontSize: 18, fontWeight: 700 }}>自由模式 · 選曲</div>
           <Button variant="ghost" onClick={onBack}>返回</Button>
@@ -44,7 +53,15 @@ export default function SongSelectScene({ onConfirm, onBack }) {
           ))}
         </div>
 
-        <Button variant="primary" style={{ width: "100%" }} onClick={() => onConfirm(DEFAULT_TRACKS[selected])}>
+        <Button
+          variant="primary"
+          style={{
+            width: "100%", height: 48, backgroundImage: `url(${ART.gogoBtn})`,
+            backgroundSize: "cover", backgroundPosition: "center",
+            color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.8)",
+          }}
+          onClick={() => onConfirm(DEFAULT_TRACKS[selected])}
+        >
           ▶ 共GO
         </Button>
       </div>

@@ -369,6 +369,22 @@ export function createGameEngine(callbacks = {}) {
     // 生效等既有規則),不是新邏輯,只是把原本只有內部呼叫得到的行為
     // 開一個公開入口,不影響任何既有呼叫路徑的行為。
     addStability(delta, source, nowMs) { return applyStabilityDelta(state, delta, source, nowMs, callbacks); },
+    // 2026-07-16 新增(B3 接線):對照原始碼「一般失衡」(平衡對抗事件完全
+    // 沒操作過才觸發,imbalanceKindRef=""、1.5 秒樂器 lockout),跟既有的
+    // `triggerSevereImbalance()`(miss 打到穩定度 0 才觸發,kind="severe"、
+    // 2 秒 lockout)共用同一組 state 欄位(`imbalanceUntil`/`imbalanceKind`)
+    // 跟同一顆 UI callback(`onSevereImbalanceTriggered`)——原始碼本來就是
+    // 同一組 `imbalanceUntilRef`/`imbalanceKindRef`,只是觸發原因/持續時間
+    // 不同,呼叫端(平衡對抗事件邏輯)自己決定 `durationMs`。刻意不改名成
+    // `onSevereImbalanceTriggered` 以外的名字——呼叫端(`PlayScene.jsx`)
+    // 現有的 callback 實作(鎖 UI + 排 `recoverFromImbalance` 計時器)本來
+    // 就是「不管什麼原因觸發都要做的事」,不需要為了語意精確而多開一顆
+    // 幾乎一樣的 callback。
+    triggerImbalance(durationMs, nowMs) {
+      state.imbalanceUntil = nowMs + durationMs;
+      state.imbalanceKind = "";
+      callbacks.onSevereImbalanceTriggered && callbacks.onSevereImbalanceTriggered(nowMs + durationMs);
+    },
     getState() { return state; },
     loadState(s) { state = { ...createInitialJudgeState(), ...s }; },
     reset() { state = createInitialJudgeState(); },
