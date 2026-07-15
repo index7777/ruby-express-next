@@ -35,6 +35,8 @@ import {
   COLORS as UI_COLORS, clamp01, stabilityColor, progressColor,
   Button, Panel, Card, ProgressBar, Dialog,
 } from "../ui/index.js";
+import { createBossManager } from "../boss/index.js";
+import { createNpcManager } from "../npc/index.js";
 import { PlayScene } from "../game/index.js";
 
 function Row({ label, ok, detail }) {
@@ -154,6 +156,57 @@ export default function App() {
   const [uiProgress, setUiProgress] = useState(0.7);
   const [uiDialogOpen, setUiDialogOpen] = useState(false);
 
+  const bossRef = useRef(null);
+  if (!bossRef.current) bossRef.current = createBossManager();
+  const [bossTick, setBossTick] = useState(0);
+  const bumpBoss = () => setBossTick((t) => t + 1);
+  const bossHit = (cat) => {
+    const now = Date.now();
+    const b = bossRef.current;
+    const result = b.applyHit(cat, { combo: 0 });
+    if (result.finisherTriggered) b.startHoldAttack(now, true, {});
+    const gate = b.checkPhaseGate();
+    if (gate) b.startGate(now, gate, {});
+    b.checkDeath();
+    bumpBoss();
+  };
+  const bossHoldResolve = (succeed) => {
+    const b = bossRef.current;
+    if (!b.hold) return;
+    if (succeed) b.tickHold(b.hold.need, true);
+    b.resolveHold(b.hold.deadline);
+    b.checkDeath();
+    bumpBoss();
+  };
+  const bossGateResolve = () => {
+    const b = bossRef.current;
+    if (!b.gate) return;
+    b.gate.heldMs = b.gate.needMs; // demo:直接補滿平衡條,不用真的按方向鍵
+    b.resolveGate(b.gate.deadline);
+    bumpBoss();
+  };
+  const bossReset = () => { bossRef.current.reset(); bumpBoss(); };
+
+  const npcRef = useRef(null);
+  if (!npcRef.current) npcRef.current = createNpcManager();
+  const [npcTick, setNpcTick] = useState(0);
+  const bumpNpc = () => setNpcTick((t) => t + 1);
+  const npcForceSpawn = () => {
+    const now = Date.now();
+    // demo 用 rand=()=>0 讓機率門檻/加權挑選一定選到池子裡第一個還沒被
+    // 排除的型別,每點一次通常會生出一個新的型別,方便展示互斥/並存規則,
+    // 不是真的模擬原始碼的隨機發生率。
+    const type = npcRef.current.rollSpawn(now, { npcCap: 3, stability: 100 }, () => 0);
+    if (type) npcRef.current.spawn(type, now, {});
+    bumpNpc();
+  };
+  const npcDismissOldest = () => {
+    const first = npcRef.current.active[0];
+    if (first) npcRef.current.dismiss(first.id);
+    bumpNpc();
+  };
+  const npcReset = () => { npcRef.current.reset(); bumpNpc(); };
+
   const checks = useMemo(() => {
     const save = loadSave();
     const rank = accRank({ perfect: 10, great: 0, good: 0, miss: 0 });
@@ -254,6 +307,18 @@ export default function App() {
           return clamp01(-1) === 0 && clamp01(2) === 1 && progressColor(0.05) === UI_COLORS.danger;
         })(), detail: "數值夾取 + 三段式配色規則正確" },
       { label: "ui: stabilityColor 對照原始碼閾值", ok: stabilityColor(10) === "#FF2222" && stabilityColor(31) === "#36D367", detail: "10=危險紅 / 31=安全綠" },
+      { label: "boss: finisher 鎖血機制", ok: (() => {
+          const b = createBossManager();
+          b.hp = 5;
+          const r = b.applyHit("perfect", {});
+          return r.finisherTriggered === true && b.hp === 4;
+        })(), detail: "hp 降到 4 以下鎖血並觸發 finisher" },
+      { label: "npc: 增益 NPC 互斥", ok: (() => {
+          const n = createNpcManager();
+          n.spawn("police", 0);
+          const type = n.rollSpawn(0, { npcCap: 5, stability: 100 }, () => 0.001);
+          return type !== "conductor" && type !== "cleaner" && type !== "staff";
+        })(), detail: "已有增益 NPC 在場時不會抽到其他增益型別" },
     ];
   }, []);
 
@@ -315,7 +380,7 @@ export default function App() {
       <div style={{ width: "100%", maxWidth: 480 }}>
         <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>共GO · Ruby Express</div>
         <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 14 }}>
-          Phase 1+2+4+5+6+7+8 搬移驗證 + Phase 3 判定測試場接線 — {allOk ? "全部模組載入正常 ✓" : "有模組載入異常，請截圖回報 ✗"}
+          Phase 1+2+4+5+6+7+8+9 搬移驗證 + Phase 3 判定測試場接線 — {allOk ? "全部模組載入正常 ✓" : "有模組載入異常，請截圖回報 ✗"}
         </div>
         <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 12, overflow: "hidden" }}>
           {checks.map((c) => <Row key={c.label} {...c} />)}
@@ -537,6 +602,64 @@ export default function App() {
               點擊「primary」按鈕觸發,點背景或按鈕都能關閉。
             </div>
           </Dialog>
+        </div>
+
+        <div style={{ marginTop: 18, padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(226,75,74,0.3)" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>BOSS 系統展示(boss 系統唯一沒辦法在沙箱驗證的部分)</div>
+          <ProgressBar value={bossRef.current.hp / 100} style={{ marginBottom: 4 }} />
+          <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 8, fontFamily: "monospace" }}>
+            BOSS hp={bossRef.current.hp.toFixed(1)} · phase={bossRef.current.phase} ·
+            玩家 hp={bossRef.current.playerHp.toFixed(1)} · outcome={bossRef.current.outcome ?? "-"}
+          </div>
+          <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+            <Button variant="primary" onClick={() => bossHit("perfect")}>Perfect 命中</Button>
+            <Button variant="secondary" onClick={() => bossHit("great")}>Great 命中</Button>
+            <Button variant="ghost" onClick={() => bossHit("miss")}>Miss</Button>
+          </div>
+          {bossRef.current.hold && (
+            <div style={{ fontSize: 12, marginBottom: 8, padding: 8, borderRadius: 8, background: "rgba(255,215,0,0.08)" }}>
+              💼 長按 QTE 進行中(lane {bossRef.current.hold.lane}
+              {bossRef.current.hold.isFinisher ? " · finisher" : ""}) held {bossRef.current.hold.held}/{bossRef.current.hold.need}ms
+              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                <Button variant="primary" onClick={() => bossHoldResolve(true)}>補滿(成功)</Button>
+                <Button variant="ghost" onClick={() => bossHoldResolve(false)}>放掉(失敗)</Button>
+              </div>
+            </div>
+          )}
+          {bossRef.current.gate && (
+            <div style={{ fontSize: 12, marginBottom: 8, padding: 8, borderRadius: 8, background: "rgba(63,224,255,0.08)" }}>
+              ⚖ 平衡對抗進行中(push={bossRef.current.gate.push})
+              <div style={{ marginTop: 6 }}>
+                <Button variant="secondary" onClick={bossGateResolve}>直接判定(demo 補滿平衡條)</Button>
+              </div>
+            </div>
+          )}
+          <Button variant="ghost" onClick={bossReset}>reset</Button>
+        </div>
+
+        <div style={{ marginTop: 18, padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.04)" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>NPC 系統展示(npc 系統唯一沒辦法在沙箱驗證的部分)</div>
+          <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+            <Button variant="primary" onClick={npcForceSpawn}>生成一個 NPC(demo,略過真實機率)</Button>
+            <Button variant="ghost" onClick={npcDismissOldest}>驅散最舊一個</Button>
+            <Button variant="ghost" onClick={npcReset}>reset</Button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {npcRef.current.active.length === 0 && (
+              <div style={{ fontSize: 11, opacity: 0.6 }}>(目前沒有在場的 NPC)</div>
+            )}
+            {npcRef.current.active.map((n) => (
+              <Card key={n.id} style={{ fontSize: 12, padding: "8px 10px" }}>
+                {n.type} · 剩餘 {Math.max(0, n.durationMs - (Date.now() - n.bornAt))}ms
+              </Card>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, opacity: 0.7, marginTop: 6, fontFamily: "monospace" }}>
+            police={String(npcRef.current.isPoliceActive(Date.now()))} ·
+            conductor={String(npcRef.current.isConductorActive(Date.now()))} ·
+            studentSeat={String(npcRef.current.isStudentSeatActive(Date.now()))} ·
+            cleanerBlocking={String(npcRef.current.isCleanerBlocking(Date.now()))}
+          </div>
         </div>
       </div>
     </div>

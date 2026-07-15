@@ -32,7 +32,7 @@ repo 同步，避免 `node_modules` 塞爆 Drive 同步。資料夾根目錄的 
 工作前後記得都要跑一次。詳見 `ruby-express` 主 repo 的 `HANDOFF.md`
 「🔄 異地同步」一節。
 
-## 目前狀態（Phase 8 完成 + Phase 7 + Phase 6 + Phase 5 + Phase 4 + Phase 3 GameEngine 核心實作完成，2026-07-15）
+## 目前狀態（Phase 9 完成 + Phase 8 + Phase 7 + Phase 6 + Phase 5 + Phase 4 + Phase 3 GameEngine 核心實作完成，2026-07-15）
 
 - ✅ Vite + React 18 建置骨架，`npm run build` 已在沙箱驗證可正常編譯。
 - ✅ 15 個系統模組資料夾已建立於 `src/systems/`，每個資料夾都有
@@ -106,24 +106,41 @@ repo 同步，避免 `node_modules` 塞爆 Drive 同步。資料夾根目錄的 
   `Dialog.jsx`(對照 `tiltAskOverlay`+`tiltAskCard`)。沙箱 `npm run build`
   (82 modules)+ node 測試腳本 `test-ui.mjs`(26 項斷言)全過,既有 5 支
   測試回歸也全過。`App.jsx` 新增獨立展示區塊(不動任何已驗證過的舊畫面)。
+- ✅ **Phase 9 完成**:BOSS(`systems/boss/`)+ NPC(`systems/npc/`)系統。
+  兩者原本完全沒被任何 Phase 碰過(唯二剩下的空白系統資料夾),這次一起做:
+  `boss/bossManager.js` 的 `BossManager` 逐字對照原始碼 BOSS 戰核心(傷害
+  公式/P1-P2-P3 階段門檻/彈幕生成/訊號干擾+口水噴濺特招/公事包 finisher
+  長按 QTE/50%·30% 平衡對抗閘門/死亡復活),`npc/npcManager.js` 的
+  `NpcManager` 涵蓋 10 種 NPC(擴音上班族/放閃情侶/亂跑小孩/背包客/站務員/
+  捷運警察/清潔隊員/列車長/讓座學生/占位行李客,注意實際是 10 種不是
+  README 舊寫的 6 種)的權重抽選/並存互斥/驅散門檻/增益效果。過程中發現
+  `config/README.md` 一直沒同步 Phase 1 其實漏搬的 `BOSS_FINISHER_*`
+  常數,這次順手補齊;另外抽出共用的 `config/balanceGate.js`(平衡對抗
+  物理),BOSS 閘門/背包客擠過來事件共用同一套公式。沙箱 `npm run build`
+  (92 modules)+ node 測試腳本 `test-boss.mjs`(54 項斷言)/`test-npc.mjs`
+  (42 項斷言)全過,既有 6 支測試回歸也全過。`App.jsx` 新增可以手動觸發
+  BOSS 命中/QTE/平衡對抗跟 NPC 生成/驅散的展示區塊。
 - ❌ 判定/BOSS 專屬的具名合成音效(playBump/playChime/playDoorOpen 等)
   刻意留到 Judge 接線階段跟 Judge/Boss 邏輯一起搬。
 - ❌ 尚未搬入 `web-build/assets/`（166 個檔案）與 `manifest.webmanifest`
   實體檔案（等真的要接上畫面時再一次搬）。
 
 **麻煩你的部分**：`cd web-build-next && npm install && npm run dev`，打開
-瀏覽器確認：(1) 畫面顯示「Phase 1+2+4+5+6+7+8 搬移驗證 — 全部模組載入正常
-✓」；(2) 點一下「▶ 播放刷票口嗶聲測試」按鈕，確認真的聽到兩聲
+瀏覽器確認：(1) 畫面顯示「Phase 1+2+4+5+6+7+8+9 搬移驗證 — 全部模組載入
+正常 ✓」；(2) 點一下「▶ 播放刷票口嗶聲測試」按鈕，確認真的聽到兩聲
 「嗶—嗶—」；(3) 在 FX 展示區塊點過 10 種特效按鈕、Screen Shake、Hit
 Stop；(4) 在 Scene Manager 展示區塊點幾個 goto 按鈕跟 back()；(5) 在
 Camera 展示區塊點過各個 BOSS/Combo 按鈕，確認畫面框真的有縮放/平移
 效果、上方數值有跟著變化；(6) 在 Particle / Lighting 展示區塊點過 5 種
 粒子 preset 按鈕(確認框內真的有粒子噴發/飛出去/消散)跟 4 種光效 preset
-按鈕(確認框內有色調疊層跟著淡入淡出)；(7) 在新增的 UI 設計系統展示
-區塊點過三種 Button variant、點過 Card 切換選中、用按鈕調過 ProgressBar
-數值(確認顏色隨數值三段變化)、點開/關過 Dialog。七項都確認沒問題後
-回報，之後會討論 GameEngine/Scene Manager/Camera/Particle/Lighting/UI
-要不要開始接線、或先做 Phase 9(下一階段規劃)。
+按鈕(確認框內有色調疊層跟著淡入淡出)；(7) 在 UI 設計系統展示區塊點過
+三種 Button variant、點過 Card 切換選中、用按鈕調過 ProgressBar 數值
+(確認顏色隨數值三段變化)、點開/關過 Dialog；(8) 在新增的 BOSS 系統展示
+區塊連續點「Perfect 命中」把 BOSS 打到 finisher QTE 出現，試一下「補滿
+(成功)」跟「放掉(失敗)」兩種結果；(9) 在新增的 NPC 系統展示區塊點過
+幾次「生成一個 NPC」，確認清單會出現不同型別、增益型別互斥、時間會倒數。
+九項都確認沒問題後回報，之後會討論 GameEngine/Scene Manager/Camera/
+Particle/Lighting/UI/BOSS/NPC 要不要開始接線、或規劃下一階段。
 
 ## 系統模組列表
 

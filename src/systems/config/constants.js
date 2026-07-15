@@ -73,6 +73,21 @@ export const STAFF_DURATION_MS = 8000;
 export const BACKPACK_SCORE = 300; // 驅散一位背包客
 export const NOISE_SCORE = 20;     // 清除一顆雜訊
 
+// BOSS 公事包處決 finisher(逐字對照原始碼 598-606 行)。README 之前就列了
+// 這幾個常數名字,但一直沒真的搬進來(文件寫早了),Phase 9 一併補上。
+export const BOSS_FINISHER_HP = 4;               // HP 降到這個門檻就鎖血,啟動 finisher
+export const BOSS_FINISHER_SUCCESS_SCORE = 1500;
+export const BOSS_FINISHER_FAIL_SCORE = 600;
+export const BOSS_FINISHER_FAIL_DMG_PCT = 0.4;   // 失敗傷害 = 玩家最大 HP 的 40%
+
+// BOSS 彈幕/特殊招式頻率隨階段變快(逐字對照原始碼 2147/2153 行),索引
+// 對應 bossPhase(1/2/3),下標 0 補位不使用(phase 從 1 開始比較好對照)。
+export const BOSS_BULLET_INTERVAL_MS = [null, 500, 360, 260];
+export const BOSS_SPECIAL_INTERVAL_MS = [null, 12000, 7200, 5200];
+// hold-attack(公事包/強制加班長壓)需要按住的時間,P3 比 P1/P2 長(對照 3303 行)。
+export const HOLD_NEED_MS = [null, 2000, 2000, 2400];
+export const HOLD_EXTRA_WINDOW_MS = 1300; // deadline = need + 這個值(對照 3303 行)
+
 // 觸控裝置判斷:平衡事件的「方向按鈕提示」只在 PC 顯示(可按方向鍵);手機用傾斜,不顯示按鈕
 export const IS_TOUCH = typeof window !== "undefined" && (("ontouchstart" in window) || ((navigator && navigator.maxTouchPoints) || 0) > 0);
 
