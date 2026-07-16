@@ -42,7 +42,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   LANES, KEY_TO_LANE, WINDOW_GOOD, APPROACH_SEC, FALL_DISTANCE, LANE_GAP_PX,
-  JUDGE_LABEL, ITEM_DEFS, vibrate,
+  JUDGE_LABEL, ITEM_DEFS, vibrate, BAL_CLAMP,
   DEFAULT_LANE_KEYS, DEFAULT_BALANCE_KEYS, OPP_DIR,
   createBalanceGate, advanceBalanceGate,
 } from "../config/index.js";
@@ -69,6 +69,25 @@ const CHART_CYCLES = 6; // 16 步/cycle * BEAT_SEC(0.6s) ≈ 9.6 秒/cycle,約 1
 const NPC_ROLL_INTERVAL_MS = 3000; // 對照原始碼 npcRollTimerRef 的抽選間隔
 const ITEM_KEY_MAP = { 1: "headphone", 2: "sunglasses", 3: "clearcard", 4: "express" };
 
+// ── 2026-07-16 使用者實測回報(NPC 演出接線)── 對照原始碼(index.html
+// 5121-5182 行)每種 NPC 原本都有明顯的畫面演出(全屏疊圖/角色立繪 +
+// 文字提示),這個場景 D 類 Canvas 重構之後只剩下 field 下方一行小 icon
+// 清單(見上方 `viewRef.current.npcs` 用法),完全沒有這些疊圖——玩家
+// 實測回報「沒有 NPC 演出」。這裡補上跟原始碼同一組角色/說明文字,畫面
+// 呈現簡化成「全寬疊圖 banner」(不是原始碼的絕對定位滿版特效),但角色
+// 圖片/說明文字逐一對照,不是重新發明。
+const NPC_BANNER_LABEL = {
+  phone: "擴音上班族 · 狂丟雜訊!連點清掉 · 連續 2 Great+ 驅散",
+  couple: "放閃情侶 · 音符會被閃到消失",
+  kid: "亂跑小孩 · 別打紅色炸彈!連續 4 Perfect 趕走",
+  luggage: "🧳 占位行李客 · 雙鍵同按行李箱",
+};
+// BUFF_NPC_TYPES(增益角色)大立繪標籤,對照原始碼 5161 行 `label` 對照表。
+const NPC_BUFF_LABEL = {
+  staff: "🚋 零 Miss 補道具", police: "🚔 Good→Perfect", cleaner: "🧹 淨化 3s",
+  conductor: "🧑‍✈️ Combo 無敵", student_seat: "💺 讓座回穩",
+};
+
 function laneCenterPercent(lane) {
   return (lane + 0.5) * (100 / LANES.length);
 }
@@ -91,6 +110,14 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
   const [stability, setStability] = useState(100);
   const [counts, setCounts] = useState({ perfect: 0, great: 0, good: 0, miss: 0 });
   const [imbalanceActive, setImbalanceActive] = useState(false);
+  // imbalanceKind(2026-07-16 使用者實測回報接線):"severe"(miss 歸零觸發)
+  // /""(平衡對抗零操作觸發的一般失衡),對照原始碼 imbalanceKindRef,只是
+  // 顯示文字用(嚴重失衡 vs 失衡),不影響判定邏輯。
+  const [imbalanceKind, setImbalanceKind] = useState("");
+  // expressUlt(2026-07-16 使用者實測回報接線):必殺技發動的畫面演出
+  // 進行中旗標,對照原始碼 `expressUlt` state——之前這個場景按必殺技只有
+  // 清盤面 + 一句文字提示,完全沒有原始碼那種警示條紋/列車衝來的演出。
+  const [expressUlt, setExpressUlt] = useState(false);
   const [ended, setEnded] = useState(false);
   // initialRogueCardIds(2026-07-15 選單流程接線新增):通勤模式在到站畫面
   // (ArrivalScene)選的肉鴿卡,對照原始碼 `runCardsRef`/`slot.run.cards`
@@ -221,10 +248,20 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
         ctx.drawImage(tex, laneX(i), 0, laneW, h);
       }
     });
+    // 2026-07-16 使用者實測回報接線:`ART.judgeLineFx`(判定線光效素材)
+    // 從 `assets/art.js` 建好之後從沒有任何呼叫端讀過,這個場景一直只畫
+    // 一條純白 2px 矩形當判定線——素材沒載入好時仍保留這條矩形當後備,
+    // 圖片載入完成後疊圖蓋在上面(整條線寬,置中對齊 FALL_DISTANCE)。
     ctx.globalAlpha = 0.5;
     ctx.fillStyle = "#FFFFFF";
     ctx.fillRect(0, FALL_DISTANCE, w, 2);
     ctx.globalAlpha = 1;
+    const lineFx = getImg(ART.judgeLineFx);
+    if (lineFx.complete && lineFx.naturalWidth > 0) {
+      ctx.globalAlpha = 0.9;
+      ctx.drawImage(lineFx, 0, FALL_DISTANCE - 20, w, 44);
+      ctx.globalAlpha = 1;
+    }
 
     const glowCircle = (cx, cy, r, color, glow) => {
       ctx.save(); ctx.shadowColor = glow; ctx.shadowBlur = 10;
@@ -313,6 +350,13 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
       const { x, y } = laneToPx(2, 0.5);
       emitParticlePreset(particleRef.current, "explosion", x, y);
       showNotice(`⚡ 必殺技!清空 ${total} 顆音符`);
+      // 2026-07-16 使用者實測回報接線:必殺技過去只有清盤面 + 文字提示,
+      // 完全沒有對照原始碼 `expressUlt`(1.8~2.6 秒的警示條紋 + 列車衝來
+      // 演出,見下方 JSX `expressUlt &&` 那段)的畫面效果,玩家實測回報
+      // 「沒有必殺技動畫」。這裡補上同一顆演出旗標,純視覺,不影響上面已經
+      // 執行完畢的清盤面/加分邏輯。
+      setExpressUlt(true);
+      setTimeout(() => setExpressUlt(false), 1800);
       return;
     }
     const result = itemsRef.current.useItem(key, now, { rogue: rogueRef.current });
@@ -445,6 +489,12 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
       },
       onSevereImbalanceTriggered: (untilMs) => {
         setImbalanceActive(true);
+        // 2026-07-16 使用者實測回報接線:讀 engine 內部 state 的
+        // `imbalanceKind`("severe"=miss 歸零觸發/""=平衡對抗零操作觸發),
+        // 這個 callback 本身只有 `untilMs` 參數,呼叫當下 engine 內部這個
+        // 欄位已經寫好了(見 `judge/gameEngine.js` 391 行附近),讀 state
+        // 不需要改動既有的 callback 介面(Contract 3 仍然成立)。
+        setImbalanceKind(engineRef.current.getState().imbalanceKind || "");
         applyLightingPreset(lightingRef.current, "dangerVignette");
         const delay = Math.max(0, untilMs - performance.now());
         setTimeout(() => {
@@ -671,7 +721,23 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
         // 沒有平衡對抗事件,一直傳預設值 false。現在平衡對抗事件補上了,
         // 這裡就把目前是否有進行中的平衡對抗餵給它。
         const type = npc.rollSpawn(now, { npcWeight: 1, npcCap, stability: liveStability, trainBalanceActive: !!balanceRef.current }, Math.random);
-        if (type) npc.spawn(type, now, { rand: Math.random });
+        if (type) {
+          const { gateRequest } = npc.spawn(type, now, { rand: Math.random });
+          // ⚠️ 2026-07-16 使用者實測回報接線:`NpcManager.spawn()` 對背包客
+          // (backpack)本來就會回傳 `gateRequest`(對照原始碼「背包客一上場
+          // 觸發一次擠過來的平衡對抗」),但這個場景過去完全沒有讀這個回傳值
+          // ——只丟掉,導致背包客觸發的平衡對抗事件從未真的出現過,玩家只
+          // 會看到 20~34 秒一次的「列車進入彎道」週期事件,頻率比原始碼低
+          // 很多,這是使用者實測回報「平衡事件看不到」的其中一個成因。這裡
+          // 補上:沒有進行中的平衡對抗才接手(避免打斷正在進行的事件),
+          // `rollSpawn()` 本來就已經在 `trainBalanceActive` 為真時排除
+          // backpack 候選,理論上不會撞在一起,這裡只是雙保險。
+          if (gateRequest && !balanceRef.current) {
+            balanceRef.current = gateRequest;
+            heldDirRef.current = null;
+            showNotice("🎒 背包客擠過來 · 請坐穩並抓緊扶手", 2000);
+          }
+        }
       }
       // ⚠️ 2026-07-15n 修正:這裡原本錯誤地拿「現在 t」去比對盤面音符,但
       // NPC 這次雜訊/炸彈真正會落下命中的時間是 `t + APPROACH_SEC`(還要
@@ -799,7 +865,13 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
             }
           }
         } else {
-          balanceUiNext = { push: bl.push, counter: OPP_DIR[bl.push], pct };
+          // pos(2026-07-16 使用者實測回報接線):對照原始碼 3787-3789 行
+          // 「畫面依重心 pos 傾斜」——`advanceBalanceGate()` 本來就已經算出
+          // `bl.pos`(-BAL_CLAMP~BAL_CLAMP),但這個場景過去只把 `pct` 塞進
+          // `balanceUiNext` 給進度條用,`pos` 完全沒有被讀過,导致玩家「操控
+          // 有效(pct 真的會變)但畫面完全沒有傾斜視覺回饋」。這裡把 pos 也
+          // 塞進去,下面 tick 尾端算 tiltDeg 時讀。
+          balanceUiNext = { push: bl.push, counter: OPP_DIR[bl.push], pct, pos: bl.pos };
         }
       }
 
@@ -818,9 +890,30 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
       if (cameraWrapRef.current) {
         cameraWrapRef.current.style.transform = `scale(${camState.zoom}) translate(${camState.x}px, ${camState.y}px)`;
       }
+      // tiltDeg(2026-07-16 使用者實測回報接線):對照原始碼「畫面依重心 pos
+      // 傾斜,支點設在畫面底部」(3786-3790 行),跟既有的震動 transform
+      // 一樣直接寫 DOM(見上方 `fieldBoxRef` 開頭關於 D 類接線的說明,這裡
+      // 沿用同一種「不透過 React re-render 的 style prop」寫法),兩者的
+      // rotate 疊加,`transformOrigin` 額外設成畫面底部避免跟震動的位移
+      // 感覺互相打架。
+      const tiltDeg = balanceUiNext ? Math.max(-1, Math.min(1, balanceUiNext.pos / BAL_CLAMP)) * 5 : 0;
       if (fieldBoxRef.current) {
-        fieldBoxRef.current.style.transform = `translate(${sx}px, ${sy}px) rotate(${rotate}deg)`;
+        fieldBoxRef.current.style.transform = `translate(${sx}px, ${sy}px) rotate(${rotate + tiltDeg}deg)`;
+        fieldBoxRef.current.style.transformOrigin = tiltDeg ? "50% 100%" : "50% 50%";
       }
+      // imbalanceRemainMs(2026-07-16 接線):失衡倒數卡片要顯示的剩餘毫秒數。
+      // ⚠️ 刻意直接讀 `engineRef.current.getState().imbalanceUntil`(engine
+      // 內部即時 state,同一份物件參照),不是閉包裡的 `imbalanceActive`
+      // React state——這個 `tick` 函式只在掛載時建立一次(下面 useEffect
+      // 的 deps 是 `[]`),閉包裡的 state 變數永遠是掛載當下的初始值(這個
+      // 場景其他地方已經因為同樣的 stale closure 坑修過好幾次,見
+      // `finishSong`/`onKeyDown` 等處的類似註解),讀 engine 內部狀態才會
+      // 是當下最新值,不會有「畫面卡在第一次觸發那次的剩餘時間」的 bug。
+      view.imbalanceRemainMs = Math.max(0, engineRef.current.getState().imbalanceUntil - now);
+      // backpackStackCount(2026-07-16 接線):背包客疊層視覺要讀的數量,
+      // `npc.backpackStack` 是 NpcManager 自己維護的陣列(跟 NPC 實體生命
+      // 週期分開,見 `npcManager.js` 開頭註解),之前完全沒有畫面在讀。
+      view.backpackStackCount = npc.backpackStack.length;
       view.items = {
         charges: { ...itemsRef.current.charges },
         activeUntil: { ...itemsRef.current.activeUntil },
@@ -976,6 +1069,99 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
           <ParticleLayer pm={particleRef.current} style={{ position: "absolute", inset: 0 }} />
           <FxLayer fx={fx} style={{ position: "absolute", inset: 0 }} />
 
+          {/* 2026-07-16 使用者實測回報接線:墨鏡道具「變暗遮罩」——對照
+              原始碼 `sunglassesTint`(6471 行),這個場景之前只有讓 sunglasses
+              影響判定窗寬度,完全沒有畫面變暗的效果,玩家看不出來墨鏡是否
+              真的啟動了。啟用中 = `viewRef.current.items.now` 還沒超過
+              `activeUntil.sunglasses`(跟上面道具按鈕的 `active` 判斷同一個
+              條件)。 */}
+          {viewRef.current.items && viewRef.current.items.now < viewRef.current.items.activeUntil.sunglasses && (
+            <div style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "rgba(0,0,0,0.55)", zIndex: 6 }} />
+          )}
+
+          {/* 2026-07-16 使用者實測回報接線:NPC 演出——對照原始碼(index.html
+              5121-5182 行)每種 NPC 原本都有全螢幕疊圖(角色圖 + 說明文字),
+              D 類 Canvas 重構之後只剩 field 下方一行 icon 清單(見下面
+              `viewRef.current.npcs` 那段),完全沒有畫面演出。這裡補上三種
+              負面 NPC(phone/couple/kid)+ 占位行李客(luggage)的橫幅疊圖,
+              跟增益 NPC(BUFF_NPC_TYPES)的置中大立繪 + 倒數,逐一對照
+              `NPC_BANNER_LABEL`/`NPC_BUFF_LABEL` 的原始碼文案。 */}
+          {viewRef.current.npcs.filter((n) => NPC_BANNER_LABEL[n.type]).map((n) => (
+            <div key={n.id} style={{
+              position: "absolute", left: 0, right: 0, top: 6, zIndex: 8,
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+              pointerEvents: "none",
+            }}>
+              {ART.npc[n.type] && (
+                <img src={ART.npc[n.type]} alt={n.type} style={{ height: 64, filter: "drop-shadow(0 0 10px rgba(255,120,120,0.6))" }} />
+              )}
+              <div style={{
+                fontSize: 11, fontWeight: 700, color: "#FFD0D0", textAlign: "center",
+                background: "rgba(8,10,13,0.6)", borderRadius: 8, padding: "2px 8px",
+              }}>
+                {NPC_BANNER_LABEL[n.type]}
+              </div>
+            </div>
+          ))}
+          {viewRef.current.npcs.filter((n) => NPC_BUFF_LABEL[n.type]).map((n) => (
+            <div key={n.id} style={{
+              position: "absolute", left: "50%", top: 10, transform: "translateX(-50%)",
+              zIndex: 8, display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+              pointerEvents: "none",
+            }}>
+              <div style={{ fontSize: 16, fontWeight: 900, color: "#FFE14D" }}>{Math.ceil(n.remainMs / 1000)}</div>
+              {ART.npc[n.type] && <img src={ART.npc[n.type]} alt={n.type} style={{ height: 72 }} />}
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#FFE14D", background: "rgba(8,10,13,0.6)", borderRadius: 8, padding: "2px 8px" }}>
+                {NPC_BUFF_LABEL[n.type]}
+              </div>
+            </div>
+          ))}
+          {/* 背包客疊層(2026-07-16 接線):`npc.backpackStack` 是 NpcManager
+              自己維護的疊層數量(跟 backpack NPC 實體生命週期分開,連續 2
+              Perfect 可以拍掉最舊一疊,見 `npcManager.js` `popBackpackStack`
+              開頭註解),之前完全沒有畫面在讀這個陣列長度。 */}
+          {viewRef.current.backpackStackCount > 0 && (
+            <div style={{
+              position: "absolute", left: 8, bottom: 8, zIndex: 8,
+              display: "flex", flexDirection: "column-reverse", gap: 2, pointerEvents: "none",
+            }}>
+              {Array.from({ length: Math.min(5, viewRef.current.backpackStackCount) }).map((_, i) => (
+                <img key={i} src={ART.npc.backpack} alt="backpack" style={{ width: 22, height: 22 }} />
+              ))}
+            </div>
+          )}
+
+          {/* 2026-07-16 使用者實測回報接線:失衡動畫——對照原始碼
+              `imbalanceVignette`/`imbalanceCard`(6057-6065 行),這個場景
+              之前只有把 `imbalanceActive` 拿去變穩定度條顏色跟一行文字,
+              完全沒有暈影/倒數卡片這種明顯的畫面警示。剩餘時間讀
+              `viewRef.current.imbalanceRemainMs`(tick() 裡讀 engine 內部
+              即時 state 算出來的,見上方註解)。 */}
+          {viewRef.current.imbalanceRemainMs > 0 && (
+            <>
+              <div style={{
+                position: "absolute", inset: 0, zIndex: 22, pointerEvents: "none", borderRadius: 12,
+                background: "radial-gradient(ellipse at center, transparent 40%, rgba(226,75,74,0.55) 100%)",
+              }} />
+              <div style={{
+                position: "absolute", left: "50%", top: "38%", transform: "translate(-50%, -50%)",
+                width: 220, zIndex: 23, background: "rgba(11,13,16,0.92)", border: "3px solid #FF3B3B",
+                borderRadius: 14, padding: "10px 14px", textAlign: "center",
+                boxShadow: "0 0 30px rgba(226,75,74,0.95)",
+              }}>
+                <div style={{ fontSize: 20, fontWeight: 900, color: "#FF6A6A", letterSpacing: 2 }}>
+                  {imbalanceKind === "severe" ? "⚠ 嚴重失衡" : "⚠ 失衡"}
+                </div>
+                <div style={{ fontSize: 12, color: "#FFD0D0", marginTop: 2 }}>
+                  {imbalanceKind === "severe" ? "樂器暫停 · 回穩後 +20" : "樂器暫時失靈"}
+                </div>
+                <div style={{ fontSize: 26, fontWeight: 900, color: "#FFD43B", marginTop: 4 }}>
+                  {(viewRef.current.imbalanceRemainMs / 1000).toFixed(1)}s
+                </div>
+              </div>
+            </>
+          )}
+
           {/* B3 接線:平衡對抗事件進行中的覆蓋層,對照 `BossScene.jsx` 的
               `gateUi` 同一種呈現方式(全畫面半透明疊層 + 抵抗方向文字 +
               進度條)。 */}
@@ -991,6 +1177,36 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
               </div>
               <div style={{ width: 200 }}>
                 <ProgressBar value={viewRef.current.balanceUi.pct} color="#3FE0FF" />
+              </div>
+            </div>
+          )}
+
+          {/* 2026-07-16 使用者實測回報接線:必殺技演出——對照原始碼
+              `ultOverlay`(4085-4097 行:警示條紋 + 列車衝來 + 大字文案),
+              這個場景之前按必殺技只有清盤面 + 一句文字提示。簡化成條紋 +
+              文字 + 列車圖片淡入淡出,不逐 pixel 對照原始碼的多層 CSS
+              keyframe,但角色元素(條紋/列車/文案)一一對應,不是重新發明。 */}
+          {expressUlt && (
+            <div style={{
+              position: "absolute", inset: 0, zIndex: 25, pointerEvents: "none",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              overflow: "hidden", animation: "expressFadeOut 1.8s ease-in forwards",
+            }}>
+              <div style={{
+                position: "absolute", inset: 0,
+                background: "repeating-linear-gradient(135deg, rgba(255,153,0,0.35) 0 18px, rgba(20,10,0,0.35) 18px 36px)",
+                animation: "expressStripe 0.6s linear infinite",
+              }} />
+              <img src={ART.train} alt="" style={{
+                position: "absolute", left: "-10%", top: "20%", width: "70%",
+                filter: "drop-shadow(0 0 14px rgba(255,153,0,0.85))",
+                animation: "expressTrainPass 1.6s ease-in forwards",
+              }} onError={(e) => { e.currentTarget.style.display = "none"; }} />
+              <div style={{
+                fontSize: 22, fontWeight: 900, color: "#FFD43B", textShadow: "0 0 16px rgba(255,153,0,0.9)",
+                letterSpacing: 2, zIndex: 1,
+              }}>
+                共GO!Express——!
               </div>
             </div>
           )}
@@ -1025,6 +1241,15 @@ export default function PlayScene({ audio, fx, shake, camera, onExit, track, sta
           </div>
         )}
       </div>
+
+      {/* 2026-07-16 使用者實測回報接線:必殺技演出用的 keyframes,對照
+          `BossScene.jsx` 既有的 `bossWinFadeIn` 同一種寫法(inline <style>,
+          不影響全域 CSS)。 */}
+      <style>{`
+        @keyframes expressFadeOut { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+        @keyframes expressStripe { from { background-position: 0 0; } to { background-position: 72px 0; } }
+        @keyframes expressTrainPass { from { transform: translateX(0); } to { transform: translateX(160%); } }
+      `}</style>
 
       <Dialog open={!!rogueOffer} title="🎴 抽到 3 張肉鴿卡(demo)">
         <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>

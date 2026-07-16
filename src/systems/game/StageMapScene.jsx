@@ -15,11 +15,11 @@
 // ── 2026-07-16 接線(A 類:視覺/美術套用)──
 // 背景改用 `ART.stagemapBg`(缺檔就退回 `ART.lobbyBg`,對照 `art.js` 開頭
 // 註解本來就寫的 fallback 規則),對照 `MenuLayout.jsx` 既有的「絕對定位
-// 滿版 backgroundImage + 深色漸層疊層」寫法。`ART.routeMap`(捷運路網圖)
-// 盤點時找不到清楚的「對應到哪個具體 UI 元素」——不是每一站都有自己的
-// 路網子圖,這張圖是整條線的全覽圖——所以刻意只當成清單上方的裝飾性小
-// 橫幅使用(半透明,不影響下面站點清單的可讀性),不去猜哪一站對應圖上
-// 哪個位置,避免瞎套用出錯誤的資訊。
+// 滿版 backgroundImage + 深色漸層疊層」寫法。
+//
+// ── 2026-07-16 使用者實測回報(移除):`ART.routeMap` 曾經被當成清單
+// 上方的裝飾性橫幅使用,但使用者實測後回報這張素材內容跟這個畫面不符、
+// 不該放在這裡,已移除該 `<img>`,`ART.routeMap` 目前沒有任何呼叫端使用。
 import { Button, Card } from "../ui/index.js";
 import { STATION_NAMES, STATION_EN, REDLINE_TRACKS } from "../data/index.js";
 import { loadSave, isStationUnlocked } from "../save/index.js";
@@ -43,8 +43,6 @@ export default function StageMapScene({ onSelectStation, onBack }) {
           <Button variant="ghost" onClick={onBack}>返回</Button>
         </div>
         <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 14 }}>Ruby Line</div>
-
-        <img src={ART.routeMap} alt="" style={{ width: "100%", borderRadius: 10, opacity: 0.5, marginBottom: 14 }} />
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {STATION_NAMES.map((name, i) => {

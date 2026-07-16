@@ -101,6 +101,10 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
   // 保底不留白)。只要失敗過一次就固定用備用圖,不會每次 phase 切換又
   // 重新嘗試載入已知會壞的路徑。
   const [portraitBroken, setPortraitBroken] = useState(false);
+  // expressUlt(2026-07-16 使用者實測回報接線):必殺技演出旗標,同
+  // `PlayScene.jsx` 的接線理由——這個場景按必殺技過去只有清彈幕 + 一句
+  // 文字提示,完全沒有原始碼 `expressUlt` 那種警示條紋/列車衝來的演出。
+  const [expressUlt, setExpressUlt] = useState(false);
   const [reviveAsk, setReviveAsk] = useState(false);
   const [rogueCardIds, setRogueCardIds] = useState(initialRogueCardIds || []);
   const [rogueOffer, setRogueOffer] = useState(null);
@@ -155,6 +159,15 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
     ctx.fillStyle = "#FFFFFF";
     ctx.fillRect(0, FALL_DISTANCE, w, 2);
     ctx.globalAlpha = 1;
+    // 2026-07-16 使用者實測回報接線:`ART.judgeLineFx` 跟 `PlayScene.jsx`
+    // 同一個缺口(素材建好後從沒有任何呼叫端讀過),這裡疊圖蓋在純白矩形
+    // 判定線上面,圖片沒載入好時仍看得到矩形線當後備。
+    const lineFx = getImg(ART.judgeLineFx);
+    if (lineFx && lineFx.complete && lineFx.naturalWidth > 0) {
+      ctx.globalAlpha = 0.9;
+      ctx.drawImage(lineFx, 0, FALL_DISTANCE - 20, w, 44);
+      ctx.globalAlpha = 1;
+    }
     // 彈幕本體改用 `ART.bossBullet` 真圖疊在色塊發光上——查證過這張素材
     // 已經在檔案本體處理好去背(角落 alpha=0),不需要額外去背程式碼,
     // 見 `assets/art.js` `bossBullet` 欄位的查證註解。色塊發光保留當
@@ -331,6 +344,11 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
       const { x, y } = laneToPx(2, 0.5);
       emitParticlePreset(particleRef.current, "explosion", x, y);
       showNotice(`⚡ 必殺技!清空 ${bullets.length} 顆彈幕`);
+      // 2026-07-16 使用者實測回報接線:同 `PlayScene.jsx`,補上必殺技畫面
+      // 演出旗標(見下方 JSX `expressUlt &&` 那段),純視覺,不影響上面
+      // 已經算完的傷害/清彈幕邏輯。
+      setExpressUlt(true);
+      setTimeout(() => setExpressUlt(false), 1800);
       return;
     }
     const result = itemsRef.current.useItem(key, now, { rogue: rogueRef.current });
@@ -558,6 +576,14 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
           const result = b.resolveHold(now, { invincible });
           holdUiNext = null;
           setBossHp(b.hp); setPlayerHp(b.playerHp);
+          // ⚠️ 2026-07-16 使用者實測回報接線:`resolveHold()`(`bossManager.js`
+          // 210 行)本來就已經對照原始碼算好 `scoreDelta`(公事包長按 QTE
+          // 成功 +1500/失敗 -600,`BOSS_FINISHER_SUCCESS_SCORE`/`_FAIL_SCORE`,
+          // 也已經同步寫進 `b.eventStats.finisher` 給結算頁分項明細用),但
+          // 這個場景過去只用了 `bossDmg`/`playerHp`,完全沒有把 `scoreDelta`
+          // 加進分數——公事包 QTE 對「總分」從來沒有任何影響,結算頁只看得
+          // 到判定分數,少了這一大塊(成功 +1500 是判定分數的好幾倍量級)。
+          setScore((s) => s + result.scoreDelta);
           showNotice(result.success ? "💼 撐住了!最後一擊命中!" : "💼 差一點!公事包反彈重擊了你!");
           if (result.success) {
             const { x, y } = laneToPx(2, 0.5);
@@ -579,6 +605,11 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
           const result = b.resolveGate(now, { invincible });
           gateUiNext = null;
           setPlayerHp(b.playerHp);
+          // ⚠️ 2026-07-16 使用者實測回報接線:同上面公事包 QTE 的缺口,
+          // `resolveGate()`(`bossManager.js` 254 行)算好的 `scoreDelta`
+          // (達標按完成度比例 +最多 800 分,同步寫進 `b.eventStats.g50`/
+          // `.g30`)過去只用來回血/扣血,沒有加進分數。
+          setScore((s) => s + result.scoreDelta);
           showNotice(result.met ? `⚖ 撐住了!+${Math.round(result.heal)} HP` : "⚖ 沒撐住,BOSS 反撲!");
         }
       }
@@ -619,7 +650,25 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
         // `score` 永遠是初始值 0(跟 `PlayScene.jsx` 修過的 stale closure
         // 是同一個坑)。
         const st = engineRef.current.getState();
-        const liveScore = st.score;
+        // ⚠️ 2026-07-16 使用者實測回報接線:「討伐 BOSS 的結算顯示的內容
+        // 少了得分明細跟分析」——對照原始碼 `endBoss()`(3338-3352 行),
+        // BOSS 討伐成功不是直接拿判定分數當最終分數,還要疊加「準確率 +
+        // 最高連段 + 通關時間」三項額外加分(逐字對照原始碼公式),
+        // `bossManager.js` 的 `resolveHold()`/`resolveGate()` 這兩個
+        // 事件加分本來就已經算好了(這次上面兩處補上 `setScore` 才真的
+        // 加進分數),但「最終結算加成」這一大塊過去完全沒有算過,結算頁
+        // 看到的分數只有純判定分數,少了原始碼「查看得分明細」那個展開區塊
+        // 對應的全部數字來源。
+        const elapsedSec = startPerfRef.current ? Math.max(0, (now - startPerfRef.current) / 1000) : 0;
+        const hits = (st.counts.perfect || 0) + (st.counts.great || 0) + (st.counts.good || 0) + (st.counts.miss || 0);
+        const accPct = hits ? ((st.counts.perfect * 100 + st.counts.great * 60 + st.counts.good * 30) / (hits * 100)) * 100 : 0;
+        const accBonus = Math.round(accPct * 20);                              // 準確率:0~2000
+        const comboBonus = st.maxCombo * 15;                                   // 最高連段
+        const timeBonus = Math.max(0, Math.round((120 - elapsedSec) * 20));    // 通關時間:120s 內越快越高
+        const bonusTotal = accBonus + comboBonus + timeBonus;
+        const bossBonus = { acc: Math.round(accPct), accBonus, comboBonus, timeBonus, timeSec: Math.round(elapsedSec) };
+        setScore((s) => s + bonusTotal);
+        const liveScore = st.score + bonusTotal;
         const pts = Math.floor(liveScore / 1000) + 50;
         save.points += pts;
         save.stats.bossKills = (save.stats.bossKills || 0) + 1;
@@ -646,7 +695,14 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
         for (const a of unlocked) toastLines.push(`🏅 成就解鎖:${a.name}`);
         for (const d of completed) toastLines.push(`✅ 每日達成:${d.label}`);
         showNotice(toastLines.join("\n"), 2600);
-        if (onFinished) onFinished({ ...st, outcome: "win", bossId });
+        // bossBonus/eventStats(2026-07-16 接線):讓 `BossResultScene.jsx`
+        // 能顯示「查看得分明細」展開區塊,`b.eventStats` 是
+        // `bossManager.js` 內部本來就在維護的 g50/g30/finisher 分項(見
+        // `resolveGate()`/`resolveHold()`),之前沒有任何呼叫端把它讀出來
+        // 傳給結算頁,`score` 蓋掉 `st.score` 改用加完最終加成的
+        // `liveScore`,不然結算頁分數會跟上面實際寫進存檔/哩程計算的數字
+        // 對不上。
+        if (onFinished) onFinished({ ...st, score: liveScore, outcome: "win", bossId, bossBonus, eventStats: { ...b.eventStats } });
       }
 
       const camState = camera.getState(now);
@@ -840,6 +896,12 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
   const bossPortraitRaw = phase >= 3 ? bossDef.p3 : phase >= 2 ? bossDef.p2 : bossDef.base;
   const bossPortrait = portraitBroken ? (bossDef.banner || ART.boss) : bossPortraitRaw;
   const bossBgImg = phase >= 3 ? (bossDef.bg3 || bossDef.bg) : phase >= 2 ? (bossDef.bg2 || bossDef.bg) : (bossDef.bg || ART.bossBg);
+  // currentPoints(2026-07-16 使用者實測回報接線):復活詢問卡片過去只有
+  // 按下去失敗時才會用 `showNotice()` 告知「哩程不足」,卡片本身完全沒有
+  // 顯示玩家目前有多少點/這次要扣多少/扣完剩多少,玩家看不到就無從判斷
+  // 要不要復活。只在 Dialog 開著的時候才有意義重新讀一次存檔,`reviveAsk`
+  // 打開的次數很少(只有玩家死亡當下),直接讀不會有效能疑慮。
+  const currentPoints = reviveAsk ? (loadSave().points || 0) : 0;
 
   return (
     <div style={{
@@ -937,6 +999,42 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
           <ParticleLayer pm={particleRef.current} style={{ position: "absolute", inset: 0 }} />
           <FxLayer fx={fx} style={{ position: "absolute", inset: 0 }} />
 
+          {/* 2026-07-16 使用者實測回報接線:墨鏡道具「變暗遮罩」——BOSS 戰
+              sunglasses 效果是彈幕減速(見上面 `slowActive`),過去只有讓
+              彈幕真的變慢,沒有任何畫面回饋讓玩家知道墨鏡已啟動,跟
+              `PlayScene.jsx` 同一個缺口/同一種修法。 */}
+          {viewRef.current.items && viewRef.current.items.now < viewRef.current.items.activeUntil.sunglasses && (
+            <div style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "rgba(0,0,0,0.55)", zIndex: 6 }} />
+          )}
+
+          {/* 2026-07-16 使用者實測回報接線:必殺技演出,同 `PlayScene.jsx`
+              的簡化版條紋 + 列車 + 文案疊圖,keyframes 定義見下方新增的
+              <style> 區塊。 */}
+          {expressUlt && (
+            <div style={{
+              position: "absolute", inset: 0, zIndex: 25, pointerEvents: "none",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              overflow: "hidden", animation: "expressFadeOut 1.8s ease-in forwards",
+            }}>
+              <div style={{
+                position: "absolute", inset: 0,
+                background: "repeating-linear-gradient(135deg, rgba(255,153,0,0.35) 0 18px, rgba(20,10,0,0.35) 18px 36px)",
+                animation: "expressStripe 0.6s linear infinite",
+              }} />
+              <img src={ART.train} alt="" style={{
+                position: "absolute", left: "-10%", top: "20%", width: "70%",
+                filter: "drop-shadow(0 0 14px rgba(255,153,0,0.85))",
+                animation: "expressTrainPass 1.6s ease-in forwards",
+              }} onError={(e) => { e.currentTarget.style.display = "none"; }} />
+              <div style={{
+                fontSize: 22, fontWeight: 900, color: "#FFD43B", textShadow: "0 0 16px rgba(255,153,0,0.9)",
+                letterSpacing: 2, zIndex: 1,
+              }}>
+                共GO!Express——!
+              </div>
+            </div>
+          )}
+
           {/* A 類接線:BOSS 特殊招式攻擊特效疊圖(訊號干擾/口水噴濺),
               對照 `specialFxRef` 開頭註解——短暫疊一張圖呼應 `showNotice()`
               文字提示跟 `bossSkill` 鏡頭效果,三者同一個觸發時機。 */}
@@ -1002,7 +1100,20 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
         </>
       }>
         <div style={{ fontSize: 13, color: "#C0C8D0", textAlign: "left", width: "100%" }}>
-          要復活接關、重新挑戰、還是先下車?(demo 版沒有接存檔哩程點數檢查)
+          要復活接關、重新挑戰、還是先下車?
+        </div>
+        {/* 2026-07-16 使用者實測回報接線:目前哩程點數 + 復活扣點/扣完剩多少,
+            對照 `ArrivalScene.jsx` 同一輪加的點數列——`doRevive()` 本來就會
+            真的檢查/扣 `REVIVE_COST`(見上面函式,不是「demo 版沒接檢查」,
+            這行舊註解已經過時,一併更新),只是卡片本身沒顯示數字。 */}
+        <div style={{
+          width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
+          fontSize: 12, marginTop: 8, padding: "6px 10px", borderRadius: 8, background: "rgba(255,255,255,0.05)",
+        }}>
+          <span style={{ opacity: 0.75 }}>目前哩程 {currentPoints} · 復活需 {REVIVE_COST}</span>
+          <b style={{ color: currentPoints >= REVIVE_COST ? "#7CFFB0" : "#FF8A89" }}>
+            {currentPoints >= REVIVE_COST ? `復活後剩 ${currentPoints - REVIVE_COST}` : `還差 ${REVIVE_COST - currentPoints}`}
+          </b>
         </div>
       </Dialog>
 
@@ -1011,7 +1122,12 @@ export default function BossScene({ audio, fx, shake, camera, onExit, bossId = "
           動畫拉得越長,讓 `timeScale` 這個原本只是算出來、從沒被讀過的
           數字真的產生看得到的視覺效果——單純 CSS 進場動畫,不影響任何
           判定邏輯(此時勝負已經判定完畢)。 */}
-      <style>{`@keyframes bossWinFadeIn { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: scale(1); } }`}</style>
+      <style>{`
+        @keyframes bossWinFadeIn { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: scale(1); } }
+        @keyframes expressFadeOut { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+        @keyframes expressStripe { from { background-position: 0 0; } to { background-position: 72px 0; } }
+        @keyframes expressTrainPass { from { transform: translateX(0); } to { transform: translateX(160%); } }
+      `}</style>
       <Dialog
         open={outcome === "win"}
         title="🎉 討伐成功"
